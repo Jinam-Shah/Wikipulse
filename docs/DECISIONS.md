@@ -369,3 +369,73 @@ Newest at the bottom. Format: `D-<number> (<date>, Phase <n>)`.
 - **Migration:** a `lake-data` volume built by the Phase 3 dev container has `/app/...`
   paths baked in. Delete the volume once (`docker volume rm wikipulse_lake-data`) and let the
   next run rebuild it. The lake can be rebuilt from Postgres for any hour within retention.
+
+## D-029 (2026-11-09, Phase 5) - Spike detector: per-page EWMA z-score, gated by editors
+
+- **Baseline:** exponentially weighted mean and variance of each page's edits per
+  5-minute window, half-life 72 windows (6 hours). Windows without edits count as zero
+  and are applied lazily, in closed form, when the page next appears, so the ~99 % of
+  pages that are quiet cost nothing. Baselines unseen for 3 days are deleted (by then they
+  have decayed to the same state as a brand-new page).
+- **Score:** `z = (edits - mean) / sqrt(var + 1.0)`. The `+ 1.0` variance floor keeps a
+  page with a flat history from scoring z = 50 on a single edit; a quiet page needs about
+  5 edits in 5 minutes to reach z = 4, while a page that normally gets 6 edits per window
+  needs about 25.
+- **Opening a trend needs all of:** z >= 4, >= 5 edits, >= 3 distinct editors, <= 50 %
+  bot edits. The editor rule is the spec's "one person can't create a trend". Phase 3's
+  real data showed why: the most-edited pages were often edited by a single person.
+- **Closing:** after 3 consecutive windows (15 min) with z < 1. `ended_at` = end of the
+  last active window. The baseline keeps learning during a trend (the slow 6-hour
+  half-life means a short spike barely moves it).
+- **Event time, not wall time:** a window is judged only after the *stream* has moved
+  2 minutes past its end (latest edit `ts`), so replaying history (backfill) produces
+  exactly the same trends as live running (tested). `detected_at` records wall-clock time.
+- **Known limits:** edits arriving after their window was judged are ignored by the
+  radar (they still count in the metrics); thresholds are hand-set, and the lead-time
+  study (D-031) is the first evidence about them; a page that is always busy can still
+  trend, but only on a large relative jump.
+
+## D-030 (2026-11-09, Phase 5) - Page-view confirmation
+
+- Source: Wikimedia Pageviews API, per-article, hourly, `agent=user` (excludes
+  self-identified bots and automated traffic).
+- **Confirmed** if any of the 4 hours starting at the trend's start hour has >= 3x the
+  page's median hourly views over the previous 71 hours (hours absent from the API = 0
+  views), and >= 200 views. **Not confirmed** if that hasn't happened once all 4 hours
+  should have data (data delay assumed 4 h). Until then **pending**, re-checked every 30 min.
+- Hourly page-view data is published with a delay: the public hourly dump for 16:00 UTC
+  appeared at 18:51 UTC on 2026-11-09, so confirmation trails detection by hours. That's
+  the point of measuring both: the radar flags from edits within minutes, and page views
+  confirm later that the public cared.
+- Etiquette: one request per trend covering 75 hours, at most 60 requests/min (limit
+  200), Retry-After honoured, every hour cached in `page_views_hourly`.
+- Wikis without a Pageviews project (Commons, Wikidata, `samplewiki`, ...) get
+  `views_status = 'unavailable'`.
+- From the cloud dev container the API answered 429 (shared IP), so confirmation was
+  tested with a mocked API there; it runs for real from a home connection.
+
+## D-031 (2026-11-09, Phase 5) - How lead time is measured
+
+- EventStreams keeps at least 10 days of history (checked: a `since=` 10 days back
+  returned events from then), so the radar can be run over a replayed day of real edits.
+- For a sample of the strongest trends in that replay, the real-world event time is
+  taken from public reporting (sources linked in `docs/LEAD_TIME.md`), and
+  **lead time = trend start (first spiking window) - event time**. A small positive number
+  means WikiPulse flagged it soon after the event; it can't be negative unless the event
+  time was wrong.
+- Honest limits: the sample is small and picked from WikiPulse's own detections, so it
+  shows *how fast* detection is when it works, not *how many* news events it catches
+  (recall). Event times from news reports are themselves approximate.
+
+## D-032 (2026-11-09, Phase 5) - Revert gate: revert-heavy spikes aren't news
+
+- **Found in the first real replay (26 h of enwiki):** with D-029's rules, 20 trends were
+  found; 12 started in windows where 30-83 % of edits were reverts. These were vandalism
+  followed by cleanup (a vandal plus two reverting editors pass the "3 editors" rule), not news.
+- **Rule added:** a window can't open a trend if >= 30 % of its edits are reverts
+  (`max_revert_share`). Result on the same replay: 8 trends, 6 of them news.
+- **Why it's principled, not just tuning:** revert-heavy activity is exactly what the Edit
+  War Detector (Phase 8) and the vandalism score (Phase 6) are for; the radar's job is
+  "the world is talking about this page".
+- **Caveat:** the threshold was chosen on the same data it was evaluated on
+  (docs/LEAD_TIME.md says so). Re-check on a different day before trusting the precision figure.

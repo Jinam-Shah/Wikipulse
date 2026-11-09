@@ -59,6 +59,7 @@ jobs:
           python -m wikipulse.lake status
           python -m wikipulse.lake dbt build
           python -m wikipulse.lake dbt source freshness
+          python -m wikipulse.radar --once --no-pageviews --no-metrics-server
       - name: Postgres has both databases
         run: |
           docker exec wikipulse-postgres psql -U wikipulse -d wikipulse -tAc \

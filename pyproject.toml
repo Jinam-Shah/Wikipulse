@@ -34,6 +34,7 @@ wikipulse-producer = "wikipulse.producer.main:cli"
 wikipulse-processor = "wikipulse.processor.main:cli"
 wikipulse-db = "wikipulse.db.__main__:main"
 wikipulse-lake = "wikipulse.lake.__main__:main"
+wikipulse-radar = "wikipulse.radar.main:cli"
 
 [project.optional-dependencies]
 dev = [

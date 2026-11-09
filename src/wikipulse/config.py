@@ -37,6 +37,7 @@ class Settings:
     batch_timeout_s: float = 1.0
     retention_days: int = 7
     processor_metrics_port: int = 9108
+    radar_metrics_port: int = 9109
     # --- lakehouse (Phase 3) ---
     lake_dir: Path = field(default_factory=lambda: Path("data/lake"))
 
@@ -69,5 +70,6 @@ def load_settings() -> Settings:
         batch_timeout_s=float(env("WIKIPULSE_BATCH_TIMEOUT_S", "1.0")),
         retention_days=int(env("WIKIPULSE_RETENTION_DAYS", "7")),
         processor_metrics_port=int(env("WIKIPULSE_PROCESSOR_METRICS_PORT", "9108")),
+        radar_metrics_port=int(env("WIKIPULSE_RADAR_METRICS_PORT", "9109")),
         lake_dir=Path(env("WIKIPULSE_LAKE_DIR", "data/lake")),
     )
