@@ -65,6 +65,9 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--start", help="first hour (ISO 8601, UTC)")
         sp.add_argument("--end", help="end hour, exclusive (default: now)")
     sub.add_parser("status")
+    snap = sub.add_parser("snapshot", help="write a training snapshot of silver edits")
+    snap.add_argument("--days", type=int, default=7)
+    snap.add_argument("--end", help="window end (ISO 8601, UTC; default: last finished hour)")
     dbt = sub.add_parser("dbt", help="run a dbt command against the lake")
     dbt.add_argument("dbt_args", nargs=argparse.REMAINDER)
     args = p.parse_args(argv)
@@ -79,6 +82,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "dbt":
         return run_dbt(paths, args.dbt_args)
+
+    if args.cmd == "snapshot":
+        from wikipulse.lake.export import floor_hour
+        from wikipulse.lake.snapshot import training_snapshot
+
+        end = _parse_dt(args.end) if args.end else floor_hour(datetime.now(UTC))
+        snap = training_snapshot(paths, end, args.days)
+        print(
+            f"snapshot rows={snap.rows} iceberg_snapshot={snap.iceberg_snapshot_id} -> {snap.path}"
+        )
+        return 0
 
     if args.cmd == "status":
         from wikipulse.lake.iceberg import ensure_tables

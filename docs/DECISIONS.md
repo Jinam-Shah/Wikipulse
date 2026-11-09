@@ -299,3 +299,73 @@ Newest at the bottom. Format: `D-<number> (<date>, Phase <n>)`.
   from Windows don't guarantee. Copy files out with `docker compose cp` if needed.
 - D-022's version caps stay: they cost nothing and keep CI and the container on the
   same releases.
+
+## D-024 (2026-11-09, Phase 4) - Airflow runs WikiPulse code from its own virtualenv
+
+- **Problem:** WikiPulse needs dbt, PyIceberg, DuckDB, pyarrow and SQLAlchemy 2.1; Airflow
+  pins its own versions of several of these. Installing both into one environment risks
+  breaking Airflow or our code.
+- **Options:** (a) `pip install` into Airflow's environment; (b) DockerOperator (needs
+  the Docker socket inside Airflow); (c) a separate virtualenv inside a custom Airflow image.
+- **Choice:** (c). `Dockerfile.airflow` builds on `apache/airflow:3.4.0-python3.12` and adds
+  `/opt/wikipulse/venv`. Tasks are `BashOperator`s that call the existing CLIs through
+  `$WIKIPULSE_PYTHON`, so DAG files import only Airflow.
+- `./src` and `./dbt` are mounted read-only, so code edits are used by the next task run
+  without a rebuild (rebuild only when dependencies change). dbt's build output goes to
+  the shared `lake-data` volume (`DBT_TARGET_PATH`, `DBT_LOG_PATH`).
+- Airflow and the dev container share the `lake-data` volume and run as the same uid
+  (`AIRFLOW_UID`, default 50000), so files either one writes stay writable by the other.
+  `airflow-init` and `lake-init` fix ownership at start (volumes from earlier versions
+  were root-owned).
+
+## D-025 (2026-11-09, Phase 4) - Hourly DAG: re-process 3 hours, check the settled one
+
+- `wikipulse_hourly_lake` runs `@hourly`. Each run rebuilds the 3 hours ending at
+  `data_interval_end` (E). Late edits (the processor's p99 latency is about 13 s, and a restart
+  can delay more) are picked up by the next two runs, so an hour is final about 3 hours later.
+  Every step is idempotent, so the overlap costs only a few seconds.
+- Templates use only `data_interval_end`. In Airflow 3, cron schedules default to
+  trigger timetables where start == end, so `data_interval_start` would be misleading.
+- `max_active_runs=1` plus a one-slot `lake` pool: never two writers on the Iceberg
+  SQLite catalog or the DuckDB file at once.
+- Retries: 2 for load/dbt tasks (transient errors); 0 for checks, because a failed check is a finding.
+
+## D-026 (2026-11-09, Phase 4) - Data-quality checks and where alerts go (for now)
+
+| Check | Pass | Warn | Fail |
+|---|---|---|---|
+| `stream_freshness` (latest `processed_at`) | <= 15 min old | 15-60 min | > 60 min or no data |
+| `hourly_volume` (vs median of previous 24 h *with data*) | 0.2x-5x | > 5x (could be big news) | < 0.2x |
+| `lake_reconciliation` (gold.wiki_hourly vs Postgres) | equal | - | any difference, or hour missing |
+| `revert_rate` | <= 15 % | > 15 % (>= 50 edits) | - |
+
+- Checked hour = E-2h, old enough that late events have settled (checking the hour that
+  just ended would flag false mismatches).
+- Volume needs 6 earlier hours of history before judging; hours when the pipeline was off
+  are absent from the baseline rather than counted as zero.
+- **Alerts:** every result is stored in `data_quality_checks` (history for the dashboard),
+  printed in the task log, and a `fail` fails the task (red in the Airflow UI). Email and
+  push delivery arrive with the alerting system in Phase 12.
+- The dead-letter rate isn't checked here: it lives in Kafka/Prometheus, not Postgres. It's
+  in the Prometheus metrics (D-016) and will be alerted on with Grafana in Phase 13.
+
+## D-027 (2026-11-09, Phase 4) - Weekly retraining DAG before the model exists
+
+- `wikipulse_weekly_retrain` (Sundays 03:17 UTC) already writes the weekly training
+  snapshot: 7 days of `silver.edits` to `training/edits_<date>.parquet`, with a manifest
+  holding the Iceberg snapshot id, so each model can be traced to exact data.
+- `train_model` runs `python -m wikipulse.ml.train` once it exists (Phase 6); until then it
+  exits 99, which Airflow treats as **skipped**, not failed or faked.
+
+## D-028 (2026-11-09, Phase 4) - The lake is mounted at the same path in every container
+
+- **Found while testing Phase 4:** Iceberg metadata (and the SQLite catalog) store
+  **absolute** file locations. Airflow mounted the lake at `/opt/wikipulse/data` while the
+  dev container used `/app/data`, so tables written by one were unreadable by the other
+  ("Failed to open local file /opt/wikipulse/...").
+- **Fix:** every container mounts the `lake-data` volume at `/opt/wikipulse/data`
+  (`WIKIPULSE_LAKE_DIR=/opt/wikipulse/data/lake`). A lake built natively on a machine
+  (`./data/lake`) is a *separate* lake; don't mix the two.
+- **Migration:** a `lake-data` volume built by the Phase 3 dev container has `/app/...`
+  paths baked in. Delete the volume once (`docker volume rm wikipulse_lake-data`) and let the
+  next run rebuild it. The lake can be rebuilt from Postgres for any hour within retention.
