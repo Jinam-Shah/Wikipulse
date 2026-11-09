@@ -4,9 +4,10 @@
 spots breaking news from sudden edit spikes, explains in plain English what changed and why,
 detects edit wars and likely vandalism, and alerts users when a topic they follow starts moving.
 
-> **Status:** Phase 3 - live Wikipedia edits flow through Kafka into Postgres (5-minute
-> page windows), then hourly into a lakehouse: Parquet files, Iceberg bronze/silver/gold
-> tables, and tested dbt marts on DuckDB with a published docs site.
+> **Status:** Phase 4 - live Wikipedia edits flow through Kafka into Postgres (5-minute
+> page windows); Airflow then builds the lakehouse every hour (Parquet, Iceberg
+> bronze/silver/gold, tested dbt marts on DuckDB), runs data-quality checks, and keeps a
+> weekly training snapshot.
 > Features arrive phase by phase - see [the build plan](#build-plan).
 
 ## Architecture
@@ -181,6 +182,33 @@ Re-running an hour replaces it (no duplicates); every load is an Iceberg snapsho
 time-travel to. **dbt docs:** https://jinam-shah.github.io/Wikipulse/ (built on synthetic
 sample data by GitHub Actions; see "Known limitations").
 
+### Schedule it with Airflow (Phase 4)
+
+```bash
+docker compose --profile airflow up -d --build --wait
+```
+
+Open http://localhost:8081, then **unpause** the DAGs (toggle on the left):
+
+| DAG | Schedule (UTC) | Tasks |
+|---|---|---|
+| `wikipulse_hourly_lake` | every hour | `export_and_build_lake` (last 3 hours) -> `dbt_build` -> `dbt_source_freshness` + `data_quality_checks` |
+| `wikipulse_weekly_retrain` | Sundays 03:17 | `snapshot_training_data` (7 days of silver) -> `train_model` (skipped until Phase 6) |
+
+Run one immediately instead of waiting: **Trigger** in the UI, or
+`docker compose exec airflow-scheduler airflow dags test wikipulse_hourly_lake`.
+
+Data-quality results (stream freshness, hourly volume, lake vs Postgres, revert rate):
+
+```bash
+docker exec -it wikipulse-postgres psql -U wikipulse -c "select run_at, target_hour, check_name, wiki, status, message from data_quality_checks order by id desc limit 10"
+```
+
+Airflow and the dev container share the same lake (Docker volume `lake-data`), so
+`docker compose run --rm dev python -m wikipulse.lake status` shows what Airflow built.
+Code edits in `src/` and `dbt/` are used by the next task run; rebuild the image
+(`--build`) only when `pyproject.toml` changes.
+
 ### Python development
 
 ```powershell
@@ -216,7 +244,7 @@ docker compose run --rm dev pytest -m integration
 | 1 | Producer: validation, dead-letter topic, reconnect/resume | Done |
 | 2 | Stream processor: windowed page metrics, idempotent upserts | Done |
 | 3 | Parquet, Iceberg, dbt marts | Done |
-| 4 | Airflow DAGs | |
+| 4 | Airflow DAGs | Done |
 | 5 | Breaking News Radar + pageview confirmation | |
 | 6 | Vandalism model vs Lift Wing | |
 | 7 | Databricks / Delta Lake notebook | |
@@ -246,8 +274,8 @@ docker compose run --rm dev pytest -m integration
   (see [D-007](docs/DECISIONS.md)).
 - The published dbt docs are built on synthetic data in CI, because GitHub Actions has no
   access to your local stream; the models and tests are identical.
-- The lakehouse runs on demand (`python -m wikipulse.lake run`) until Airflow schedules it
-  hourly in Phase 4.
+- Data-quality failures show in Airflow and the `data_quality_checks` table; email/push
+  alerts arrive in Phase 12.
 - If the producer is down for longer than Wikimedia's stream history, the missed edits
   can't be recovered from EventStreams.
 

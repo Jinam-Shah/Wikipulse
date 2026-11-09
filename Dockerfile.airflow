@@ -1,0 +1,17 @@
+# Airflow 3.4 with WikiPulse installed in its OWN virtualenv (/opt/wikipulse/venv).
+# DAG tasks call that venv's python, so dbt/PyIceberg/DuckDB versions never conflict
+# with Airflow's own pinned dependencies (docs/DECISIONS.md D-024).
+ARG AIRFLOW_IMAGE=apache/airflow:3.4.0-python3.12
+FROM ${AIRFLOW_IMAGE}
+
+USER root
+RUN mkdir -p /opt/wikipulse/data && chown -R airflow:0 /opt/wikipulse
+USER airflow
+
+COPY --chown=airflow:0 pyproject.toml README.md LICENSE /opt/wikipulse/
+COPY --chown=airflow:0 src /opt/wikipulse/src
+# PIP_USER=false: the Airflow image defaults to --user installs, which venvs reject.
+RUN python -m venv /opt/wikipulse/venv \
+    && PIP_USER=false /opt/wikipulse/venv/bin/pip install --no-cache-dir -e /opt/wikipulse
+
+ENV WIKIPULSE_PYTHON=/opt/wikipulse/venv/bin/python

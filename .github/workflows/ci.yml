@@ -63,9 +63,25 @@ jobs:
         run: |
           docker exec wikipulse-postgres psql -U wikipulse -d wikipulse -tAc \
             "select datname from pg_database where datname in ('wikipulse','airflow') order by 1"
+      - name: Airflow image builds, DAGs import, hourly DAG runs end to end
+        run: |
+          # Linux bind mounts: run Airflow as the runner's uid so it can write ./airflow/logs.
+          export AIRFLOW_UID=$(id -u)
+          docker compose --profile airflow build
+          docker compose --profile airflow up -d --wait --wait-timeout 300 \
+            airflow-apiserver airflow-scheduler airflow-dag-processor
+          docker compose --profile airflow exec -T airflow-scheduler \
+            airflow dags list-import-errors | tee import-errors.txt
+          grep -q "No data found" import-errors.txt
+          docker compose --profile airflow exec -T airflow-scheduler \
+            airflow dags test wikipulse_hourly_lake | tee dag-test.txt
+          grep -q "DagRun Finished: dag_id=wikipulse_hourly_lake.*state=success" dag-test.txt
+          docker compose --profile airflow exec -T airflow-scheduler \
+            airflow dags test wikipulse_weekly_retrain | tee dag-test-weekly.txt
+          grep -q "DagRun Finished: dag_id=wikipulse_weekly_retrain.*state=success" dag-test-weekly.txt
       - name: Logs on failure
         if: failure()
         run: docker compose logs --tail 200
       - name: Tear down
         if: always()
-        run: docker compose down -v
+        run: docker compose --profile airflow down -v

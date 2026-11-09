@@ -131,11 +131,23 @@ Correctness: `pytest -m integration tests/integration/test_lake.py`: 6 passed (e
 Postgres; idempotent rebuild; late event updates its hour; time travel; **gold totals equal
 the processor's `page_metrics_5min` totals hour by hour**; `dbt build` passes).
 
-## Phase 4 - Orchestration
+## Phase 4 - Orchestration (Airflow 3.4, LocalExecutor)
 
-| Metric | Value | Date | Command |
+Env `cloud-dev`, `docker compose --profile airflow up -d`, image `wikipulse-airflow:dev`
+(Dockerfile.airflow), Postgres holding 8 hours of synthetic `samplewiki` edits
+(`python -m wikipulse.devtools.sample --hours 8`).
+
+| Metric | Value | Date (UTC) | Command |
 |---|---|---|---|
-| DAG runs | not measured | | |
+| DAGs loaded / import errors | 3 / 0 | 2026-11-09 17:59 | `airflow dags list`, `airflow dags list-import-errors` |
+| **Scheduled run started by the scheduler** | `scheduled__2026-11-09T18:00:00+00:00`, state **success**, 30.9 s (18:00:39.8 -> 18:01:10.7); next run 19:00 | 2026-11-09 18:00 | `airflow dags unpause wikipulse_hourly_lake`, then `airflow dags list-runs wikipulse_hourly_lake` |
+| Manual end-to-end run of `wikipulse_hourly_lake` | success, 18.4 s (4 tasks; dbt 49/49 pass; 5/5 quality checks pass) | 2026-11-09 17:59 | `airflow dags test wikipulse_hourly_lake` |
+| `wikipulse_weekly_retrain` | success: snapshot 900 rows (Iceberg snapshot 3329344356418085965); `train_model` skipped (Phase 6) | 2026-11-09 18:00 | `airflow dags test wikipulse_weekly_retrain` |
+| Shared lake, dev container <-> Airflow, both as uid 50000 | Airflow build -> dev read + rebuild 4 hours -> Airflow build again: all succeed | 2026-11-09 18:05 | see D-024, D-028 |
+| Memory at idle | scheduler 523 MiB, api-server 296 MiB, dag-processor 194 MiB (Airflow total about 1.0 GiB) | 2026-11-09 18:06 | `docker stats --no-stream` |
+| Airflow image size | 4.22 GB (Airflow base + WikiPulse venv) | 2026-11-09 | `docker images wikipulse-airflow:dev` |
+
+Not yet measured: a week of unattended scheduled runs (success rate, duration trend) on the laptop.
 
 ## Breaking News Radar (Phase 5)
 
@@ -165,4 +177,6 @@ the processor's `page_metrics_5min` totals hour by hour**; `dbt build` passes).
 | pytest unit (Phase 3) | 78 passed | 2026-11-09 | `pytest` (cloud-dev) |
 | pytest integration (Phase 3) | 16 passed | 2026-11-09 | `pytest -m integration` (cloud-dev) |
 | dbt models / data tests (Phase 3) | 9 / 40 (+3 source freshness checks) | 2026-11-09 | `python -m wikipulse.lake dbt build` |
+| pytest unit (Phase 4) | 91 passed | 2026-11-09 | `pytest` (cloud-dev) |
+| pytest integration (Phase 4) | 20 passed | 2026-11-09 | `pytest -m integration` (cloud-dev) |
 | Playwright | not measured | | |

@@ -9,7 +9,11 @@
 # Every port and password can be overridden from .env (see .env.example).
 
 x-airflow-common: &airflow-common
-  image: ${AIRFLOW_IMAGE:-apache/airflow:3.4.0-python3.12}
+  # Airflow + WikiPulse in its own virtualenv (Dockerfile.airflow, docs/DECISIONS.md D-024).
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  image: wikipulse-airflow:dev
   profiles: ["airflow"]
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -26,10 +30,22 @@ x-airflow-common: &airflow-common
     # Services inside the compose network reach each other by service name.
     WIKIPULSE_KAFKA_BOOTSTRAP: redpanda:9092
     WIKIPULSE_DATABASE_URL: postgresql://${POSTGRES_USER:-wikipulse}:${POSTGRES_PASSWORD:-wikipulse}@postgres:5432/${POSTGRES_DB:-wikipulse}
+    WIKIPULSE_WIKIS: ${WIKIPULSE_WIKIS:-enwiki}
+    WIKIPULSE_LAKE_DIR: /opt/wikipulse/data/lake
+    WIKIPULSE_DBT_DIR: /opt/wikipulse/dbt
+    # dbt writes its build output to the shared volume; the project itself is read-only.
+    DBT_TARGET_PATH: /opt/wikipulse/data/dbt/target
+    DBT_LOG_PATH: /opt/wikipulse/data/dbt/logs
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
+    # Live code: edits on your machine are used by the next task run, no rebuild needed
+    # (rebuild only when pyproject.toml dependencies change).
+    - ./src:/opt/wikipulse/src:ro
+    - ./dbt:/opt/wikipulse/dbt:ro
+    # Same lake as the dev container.
+    - lake-data:/opt/wikipulse/data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
     postgres:
@@ -180,26 +196,56 @@ services:
     image: wikipulse-dev:dev
     profiles: ["tools"]
     working_dir: /app
+    # Same user as Airflow, so files either one writes in the shared lake volume stay
+    # writable by the other. On Linux set AIRFLOW_UID to your own uid (`id -u`).
+    user: "${AIRFLOW_UID:-50000}:0"
     environment:
+      HOME: /tmp
       WIKIPULSE_KAFKA_BOOTSTRAP: redpanda:9092
       WIKIPULSE_DATABASE_URL: postgresql://${POSTGRES_USER:-wikipulse}:${POSTGRES_PASSWORD:-wikipulse}@postgres:5432/${POSTGRES_DB:-wikipulse}
-      WIKIPULSE_LAKE_DIR: /app/data/lake
+      # Same path as in Airflow: Iceberg metadata stores absolute file paths, so every
+      # container that reads the lake must mount it at the same place (D-028).
+      WIKIPULSE_LAKE_DIR: /opt/wikipulse/data/lake
       WIKIPULSE_CONTACT: ${WIKIPULSE_CONTACT:-https://github.com/jinam-shah/wikipulse/issues}
     volumes:
       - .:/app
       # The lake (SQLite catalog, DuckDB file, Parquet) lives in a Docker volume rather
       # than on the Windows bind mount, where SQLite/DuckDB file locking is unreliable.
-      - lake-data:/app/data
+      - lake-data:/opt/wikipulse/data
     depends_on:
+      lake-init:
+        condition: service_completed_successfully
       redpanda:
         condition: service_healthy
       postgres:
         condition: service_healthy
 
+  lake-init:
+    # One-shot, as root: make the shared lake volume belong to the dev/Airflow user
+    # (fixes volumes created by earlier versions, where the dev container ran as root).
+    image: wikipulse-dev:dev
+    profiles: ["tools"]
+    user: "0:0"
+    command: ["sh", "-c", "chown -R ${AIRFLOW_UID:-50000}:0 /opt/wikipulse/data"]
+    volumes:
+      - lake-data:/opt/wikipulse/data
+    restart: "no"
+
   # ---------------------------------------------------------------- Airflow
   airflow-init:
     <<: *airflow-common
-    command: ["bash", "-c", "airflow db migrate && airflow version"]
+    # As root: give the Airflow user the shared lake volume, migrate Airflow's DB, and
+    # create the one-slot "lake" pool that serialises lake writes.
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        mkdir -p /opt/wikipulse/data
+        chown -R ${AIRFLOW_UID:-50000}:0 /opt/wikipulse/data
+        airflow db migrate
+        airflow pools set lake 1 "Serialises writes to the Iceberg lake and DuckDB marts"
+        airflow version
     user: "0:0"
     restart: "no"
 
