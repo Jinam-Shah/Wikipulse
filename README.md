@@ -4,9 +4,9 @@
 spots breaking news from sudden edit spikes, explains in plain English what changed and why,
 detects edit wars and likely vandalism, and alerts users when a topic they follow starts moving.
 
-> **Status:** Phase 1 - live edits flow from Wikipedia into Kafka. The producer reads
-> Wikimedia EventStreams, validates every event, sends bad ones to a dead-letter topic,
-> reconnects on its own, and resumes after a crash without losing events.
+> **Status:** Phase 2 - live Wikipedia edits flow into Kafka and on into Postgres as
+> per-page 5-minute and per-wiki 1-minute activity windows. Replays never double-count,
+> and Prometheus tracks throughput, lag, latency and the dead-letter rate.
 > Features arrive phase by phase - see [the build plan](#build-plan).
 
 ## Architecture
@@ -36,7 +36,7 @@ flowchart LR
 
 | Mode | What runs | Where | Status |
 |---|---|---|---|
-| **Full streaming mode** | Redpanda, producer, stream processor, Airflow, Prometheus, Grafana | Your machine, `docker compose` | Redpanda, Postgres, Airflow and the producer work |
+| **Full streaming mode** | Redpanda, producer, stream processor, Airflow, Prometheus, Grafana | Your machine, `docker compose` | Everything except Grafana works |
 | **Hosted mode** | GitHub Actions every 15 min samples the stream, processes it with the same code, writes to Neon; app on Vercel, API on Render | Free cloud tiers | Not built yet (Phase 13) |
 
 Hosted mode samples a few minutes of the stream per run, so its trend detection is less
@@ -82,6 +82,7 @@ python scripts/smoke_test.py --airflow
 | Kafka API (from your machine) | `localhost:19092` |
 | Postgres | `postgresql://wikipulse:wikipulse@localhost:5432/wikipulse` |
 | Airflow UI (profile `airflow`) | http://localhost:8081 |
+| Prometheus (profile `pipeline`) | http://localhost:9090 |
 
 Stop everything: `docker compose --profile airflow down` (add `-v` to delete the data volumes).
 
@@ -115,6 +116,41 @@ The resume point is stored in `data/checkpoints/producer.json` (host) or the
 | `wikipulse.edits.v1` | One validated edit per message, key `<wiki>:<page_id>` (schema: `EditEvent` in `src/wikipulse/producer/schemas.py`) |
 | `wikipulse.edits.dlq.v1` | Events that failed validation, with the reason and the raw payload |
 
+### Turn the stream into activity windows in Postgres (Phase 2)
+
+Run the whole pipeline in containers (producer + processor + Prometheus):
+
+```bash
+docker compose --profile pipeline up -d --build
+docker logs -f wikipulse-processor
+```
+
+Or run the processor directly on your machine (in a second terminal, next to the producer):
+
+```powershell
+python -m wikipulse.processor
+```
+
+It applies the database migrations on start, then writes:
+
+| Table | One row per |
+|---|---|
+| `edits` | edit (last 7 days; `WIKIPULSE_RETENTION_DAYS`) |
+| `page_metrics_5min` | page and 5-minute window: edits, distinct editors, bot/anon edits, reverts, bytes changed |
+| `wiki_metrics_1min` | wiki and minute: edits, new pages, bot/anon edits, reverts, distinct pages/editors |
+
+The most active pages right now:
+
+```bash
+docker exec -it wikipulse-postgres psql -U wikipulse -c "select page_title, window_start, edits, distinct_editors, reverts from page_metrics_5min order by window_start desc, edits desc limit 10"
+```
+
+Metrics: Prometheus at http://localhost:9090 (try `wikipulse_processor_consumer_lag_messages`
+or `rate(wikipulse_processor_messages_total[1m])`). Raw metrics: http://localhost:9107/metrics
+(producer) and http://localhost:9108/metrics (processor).
+
+Database migrations by hand: `python -m wikipulse.db upgrade` / `current` / `downgrade -1`.
+
 ### Python development
 
 ```powershell
@@ -139,7 +175,7 @@ pytest -m integration       # needs `docker compose up -d` first
 |---|---|---|
 | 0 | Repo setup, docker-compose, CI, docs | Done |
 | 1 | Producer: validation, dead-letter topic, reconnect/resume | Done |
-| 2 | Stream processor: windowed page metrics, idempotent upserts | |
+| 2 | Stream processor: windowed page metrics, idempotent upserts | Done |
 | 3 | Parquet, Iceberg, dbt marts | |
 | 4 | Airflow DAGs | |
 | 5 | Breaking News Radar + pageview confirmation | |
@@ -165,7 +201,8 @@ pytest -m integration       # needs `docker compose up -d` first
 
 ## Known limitations
 
-- Events reach Kafka, but nothing consumes them yet (stream processor arrives in Phase 2).
+- Revert detection uses content hashes and edit summaries only (D-015); Wikimedia's own
+  revert tags are added in Phase 6.
 - The producer uses `mediawiki.page_change.v1` rather than `recentchange`
   (see [D-007](docs/DECISIONS.md)).
 - If the producer is down for longer than Wikimedia's stream history, the missed edits
