@@ -1,0 +1,113 @@
+version: 2
+
+models:
+  - name: dim_pages
+    description: One row per page seen in the lake.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [wiki, page_id]
+    columns:
+      - name: page_title
+        data_tests: [not_null]
+      - name: total_edits
+        data_tests:
+          - between:
+              arguments:
+                min_value: 1
+                max_value: 100000000
+
+  - name: fct_edits
+    description: One row per edit, ready for analysis.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: page_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_pages')
+                field: page_id
+      - name: user_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["bot", "anon", "registered"]
+
+  - name: mart_wiki_daily
+    description: Daily volume, editor mix and revert rate per wiki.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [wiki, activity_date]
+    columns:
+      - name: edits
+        data_tests: [not_null]
+      - name: bot_share
+        data_tests:
+          - between:
+              arguments: { min_value: 0, max_value: 1 }
+      - name: anon_share
+        data_tests:
+          - between:
+              arguments: { min_value: 0, max_value: 1 }
+      - name: revert_rate
+        data_tests:
+          - between:
+              arguments: { min_value: 0, max_value: 1 }
+      - name: hours_with_data
+        data_tests:
+          - between:
+              arguments: { min_value: 1, max_value: 24 }
+
+  - name: mart_top_pages_daily
+    description: Top 25 pages by edits per wiki per day (for the Daily Pulse).
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [wiki, activity_date, rank_in_day]
+    columns:
+      - name: rank_in_day
+        data_tests:
+          - between:
+              arguments: { min_value: 1, max_value: 25 }
+      - name: page_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_pages')
+                field: page_id
+
+  - name: mart_editor_types_daily
+    description: Edits, revert rate and edit size by editor type per day.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [wiki, activity_date, user_type]
+    columns:
+      - name: user_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["bot", "anon", "registered"]
+      - name: revert_rate
+        data_tests:
+          - between:
+              arguments: { min_value: 0, max_value: 1 }
+
+  - name: mart_hourly_profile
+    description: Average edits per hour of week (UTC) - the normal rhythm used to judge spikes.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [wiki, day_of_week, hour_of_day]
+    columns:
+      - name: day_of_week
+        data_tests:
+          - between:
+              arguments: { min_value: 1, max_value: 7 }
+      - name: hour_of_day
+        data_tests:
+          - between:
+              arguments: { min_value: 0, max_value: 23 }

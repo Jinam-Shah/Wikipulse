@@ -1,0 +1,22 @@
+name: wikipulse
+version: "1.0.0"
+config-version: 2
+profile: wikipulse
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages", "logs"]
+
+models:
+  wikipulse:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts
+
+flags:
+  send_anonymous_usage_stats: false

@@ -4,6 +4,7 @@
 # Pipeline (opt-in):                docker compose --profile pipeline up -d --build
 #   = producer + stream processor + Prometheus (http://localhost:9090)
 # Airflow (opt-in, needs ~4 GB RAM): docker compose --profile airflow up -d
+# Dev tools (tests, lakehouse, dbt in Linux): docker compose run --rm dev <command>
 #
 # Every port and password can be overridden from .env (see .env.example).
 
@@ -171,6 +172,30 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
+  # -------------------------------------------------------------- Dev tools
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: wikipulse-dev:dev
+    profiles: ["tools"]
+    working_dir: /app
+    environment:
+      WIKIPULSE_KAFKA_BOOTSTRAP: redpanda:9092
+      WIKIPULSE_DATABASE_URL: postgresql://${POSTGRES_USER:-wikipulse}:${POSTGRES_PASSWORD:-wikipulse}@postgres:5432/${POSTGRES_DB:-wikipulse}
+      WIKIPULSE_LAKE_DIR: /app/data/lake
+      WIKIPULSE_CONTACT: ${WIKIPULSE_CONTACT:-https://github.com/jinam-shah/wikipulse/issues}
+    volumes:
+      - .:/app
+      # The lake (SQLite catalog, DuckDB file, Parquet) lives in a Docker volume rather
+      # than on the Windows bind mount, where SQLite/DuckDB file locking is unreliable.
+      - lake-data:/app/data
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   # ---------------------------------------------------------------- Airflow
   airflow-init:
     <<: *airflow-common
@@ -224,3 +249,4 @@ volumes:
   postgres-data:
   producer-state:
   prometheus-data:
+  lake-data:

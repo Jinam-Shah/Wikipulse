@@ -1,0 +1,36 @@
+version: 2
+
+# Iceberg tables written by `python -m wikipulse.lake run`, read through dbt-duckdb's
+# iceberg plugin (PyIceberg + SQL catalog). Freshness uses the load timestamp.
+sources:
+  - name: silver
+    description: Cleaned, deduplicated edits (Iceberg, partitioned by day).
+    meta:
+      plugin: iceberg
+      iceberg_table: "silver.{identifier}"
+    loaded_at_field: _loaded_at
+    freshness:
+      warn_after: { count: 3, period: hour }
+      error_after: { count: 26, period: hour }
+    tables:
+      - name: edits
+        description: One row per edit or page creation (English Wikipedia articles by default).
+        columns:
+          - name: event_id
+            description: Wikimedia event UUID; unique per edit.
+            data_tests: [not_null, unique]
+
+  - name: gold
+    description: Hourly aggregates (Iceberg).
+    meta:
+      plugin: iceberg
+      iceberg_table: "gold.{identifier}"
+    loaded_at_field: _loaded_at
+    freshness:
+      warn_after: { count: 3, period: hour }
+      error_after: { count: 26, period: hour }
+    tables:
+      - name: page_hourly
+        description: One row per page per hour.
+      - name: wiki_hourly
+        description: One row per wiki per hour.

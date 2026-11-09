@@ -103,11 +103,39 @@ the revision's save time).
 a new consumer group (0 new rows, identical metrics), the same events shuffled into
 batches of 2 (3 random seeds, identical metrics), and duplicates inside a batch.
 
-## Data platform (Phases 3-4)
+## Phase 3 - Lakehouse (Parquet -> Iceberg -> dbt)
+
+Env `cloud-dev`. Input: **real enwiki article edits** for 2026-11-09 03:00-06:00 UTC, loaded by
+`python -m wikipulse.producer --since 2026-11-09T03:00:00Z --max-seconds 240` and
+`python -m wikipulse.processor --max-idle-seconds 8` (16,458 edits into Postgres).
+
+| Metric | Value | Command |
+|---|---|---|
+| Rows per hour (03, 04, 05 UTC) | 5,226 / 5,233 / 4,343 = 14,802 | `python -m wikipulse.lake run --start 2026-11-09T03:00Z --end 2026-11-09T06:00Z` |
+| Export + bronze/silver/gold, 3 hours, fresh lake | 2.42 s wall | same, under `time` |
+| Same 3 hours rebuilt (idempotent) | 2.30 s wall; row counts unchanged (bronze/silver 14,802, gold.page_hourly 11,996, gold.wiki_hourly 3) | same command again; `python -m wikipulse.lake status` |
+| `dbt build` | 9 models (6 tables, 3 views) + 40 data tests, all pass; 2.49 s (dbt) / 5.58 s wall | `python -m wikipulse.lake dbt build` |
+| Source freshness | 3 of 3 sources pass | `python -m wikipulse.lake dbt source freshness` |
+| On-disk size | raw Parquet 1.7 MB; Iceberg warehouse 7.2 MB (two loads, old snapshots not yet expired); DuckDB marts 5.1 MB | `du -sh data/lake/*` |
+
+What the marts showed for those 3 real hours (`marts.mart_wiki_daily`, `marts.mart_editor_types_daily`):
+
+| Fact | Value |
+|---|---|
+| Edits / new pages / distinct pages / distinct editors | 14,802 / 224 / 11,629 / 2,412 |
+| Bot share / anonymous share | 38.2 % / 8.1 % |
+| Share of edits that *are* reverts | 2.76 % (registered 4.61 %, anonymous 1.67 %, bots 0.39 %; see D-021) |
+| Top 5 pages by edits | each had 1-3 distinct editors in their busiest hour, so high edit counts alone don't signal news (this is why trends require several distinct editors) |
+
+Correctness: `pytest -m integration tests/integration/test_lake.py`: 6 passed (export matches
+Postgres; idempotent rebuild; late event updates its hour; time travel; **gold totals equal
+the processor's `page_metrics_5min` totals hour by hour**; `dbt build` passes).
+
+## Phase 4 - Orchestration
 
 | Metric | Value | Date | Command |
 |---|---|---|---|
-| dbt models / tests | not measured | | |
+| DAG runs | not measured | | |
 
 ## Breaking News Radar (Phase 5)
 
@@ -134,4 +162,7 @@ batches of 2 (3 random seeds, identical metrics), and duplicates inside a batch.
 | pytest integration (Phase 1) | 1 passed | 2026-11-09 | `pytest -m integration` with the compose stack up (cloud-dev) |
 | pytest unit (Phase 2) | 71 passed | 2026-11-09 | `pytest` (cloud-dev) |
 | pytest integration (Phase 2) | 10 passed | 2026-11-09 | `pytest -m integration` with the compose stack up (cloud-dev) |
+| pytest unit (Phase 3) | 78 passed | 2026-11-09 | `pytest` (cloud-dev) |
+| pytest integration (Phase 3) | 16 passed | 2026-11-09 | `pytest -m integration` (cloud-dev) |
+| dbt models / data tests (Phase 3) | 9 / 40 (+3 source freshness checks) | 2026-11-09 | `python -m wikipulse.lake dbt build` |
 | Playwright | not measured | | |

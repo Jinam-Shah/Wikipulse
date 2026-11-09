@@ -1,0 +1,55 @@
+version: 2
+
+models:
+  - name: stg_edits
+    description: Edits from silver, plus `event_date`.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: wiki
+        data_tests: [not_null]
+      - name: page_id
+        data_tests: [not_null]
+      - name: change_kind
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["edit", "create"]
+      - name: user_type
+        description: bot, anon (temporary account or IP) or registered.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["bot", "anon", "registered"]
+      - name: revert_kind
+        description: sha1 (exact content revert), comment (summary says revert) or null.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["sha1", "comment"]
+      - name: ts
+        data_tests: [not_null]
+      - name: comment_length
+        data_tests:
+          - between:
+              arguments:
+                min_value: 0
+                max_value: 1000
+
+  - name: stg_page_hourly
+    description: Per-page hourly aggregates from gold.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [wiki, page_id, hour_start]
+    columns:
+      - name: edits
+        data_tests: [not_null]
+
+  - name: stg_wiki_hourly
+    description: Per-wiki hourly aggregates from gold.
+    data_tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [wiki, hour_start]

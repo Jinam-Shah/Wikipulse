@@ -1,0 +1,20 @@
+# Paths come from environment variables set by `python -m wikipulse.lake dbt ...`
+# (absolute paths, so dbt works from any folder).
+wikipulse:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      path: "{{ env_var('WIKIPULSE_DUCKDB_PATH') }}"
+      # One thread: the iceberg plugin loads sources lazily, and parallel loads race on
+      # creating the same DuckDB schema. The marts are small, so this costs little.
+      threads: 1
+      settings:
+        TimeZone: UTC
+      plugins:
+        - module: iceberg
+          config:
+            catalog: wikipulse
+            type: sql
+            uri: "{{ env_var('WIKIPULSE_ICEBERG_CATALOG_URI') }}"
+            warehouse: "{{ env_var('WIKIPULSE_ICEBERG_WAREHOUSE') }}"

@@ -4,9 +4,9 @@
 spots breaking news from sudden edit spikes, explains in plain English what changed and why,
 detects edit wars and likely vandalism, and alerts users when a topic they follow starts moving.
 
-> **Status:** Phase 2 - live Wikipedia edits flow into Kafka and on into Postgres as
-> per-page 5-minute and per-wiki 1-minute activity windows. Replays never double-count,
-> and Prometheus tracks throughput, lag, latency and the dead-letter rate.
+> **Status:** Phase 3 - live Wikipedia edits flow through Kafka into Postgres (5-minute
+> page windows), then hourly into a lakehouse: Parquet files, Iceberg bronze/silver/gold
+> tables, and tested dbt marts on DuckDB with a published docs site.
 > Features arrive phase by phase - see [the build plan](#build-plan).
 
 ## Architecture
@@ -151,6 +151,36 @@ or `rate(wikipulse_processor_messages_total[1m])`). Raw metrics: http://localhos
 
 Database migrations by hand: `python -m wikipulse.db upgrade` / `current` / `downgrade -1`.
 
+### Build the lakehouse and dbt marts (Phase 3)
+
+> **Windows:** if `import pyarrow.parquet` fails with "An Application Control policy has
+> blocked this file", run these commands in the Linux dev container instead (D-023): put
+> `docker compose run --rm dev` in front, e.g.
+> `docker compose run --rm dev python -m wikipulse.lake run --hours 3`.
+> First time: `docker compose --profile tools build dev`.
+
+Once Postgres has edits (from the producer + processor, or synthetic data):
+
+```powershell
+python -m wikipulse.devtools.sample --hours 6   # optional: synthetic data (wiki "samplewiki")
+python -m wikipulse.lake run --hours 3          # last 3 finished hours -> Parquet -> Iceberg
+python -m wikipulse.lake status                 # tables, row counts, snapshots
+python -m wikipulse.lake dbt build              # marts + 40 data tests
+python -m wikipulse.lake dbt docs generate --static   # docs site: dbt/target/static_index.html
+```
+
+| Layer | Where | Contents |
+|---|---|---|
+| Raw | `data/lake/raw/edits/date=.../hour=.../edits.parquet` | one file per finished hour, exported from Postgres |
+| Bronze (Iceberg) | `bronze.edits` | raw rows + load metadata |
+| Silver (Iceberg) | `silver.edits` | deduplicated, typed, derived columns (editor type, account age, bytes changed, ...) |
+| Gold (Iceberg) | `gold.page_hourly`, `gold.wiki_hourly` | hourly aggregates |
+| Marts (dbt + DuckDB) | `data/lake/analytics.duckdb`, schema `marts` | `mart_wiki_daily`, `mart_top_pages_daily`, `mart_editor_types_daily`, `mart_hourly_profile`, `dim_pages`, `fct_edits` |
+
+Re-running an hour replaces it (no duplicates); every load is an Iceberg snapshot you can
+time-travel to. **dbt docs:** https://jinam-shah.github.io/Wikipulse/ (built on synthetic
+sample data by GitHub Actions; see "Known limitations").
+
 ### Python development
 
 ```powershell
@@ -163,11 +193,20 @@ pytest                      # unit tests
 pytest -m integration       # needs `docker compose up -d` first
 ```
 
+Or the same inside the Linux dev container (works even where Windows blocks native DLLs):
+
+```bash
+docker compose --profile tools build dev
+docker compose run --rm dev pytest
+docker compose run --rm dev pytest -m integration
+```
+
 ## Project docs
 
 - [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) - every Wikimedia endpoint, its limits, and how we follow the rules
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) - design decisions and why
 - [`METRICS.md`](METRICS.md) - measured numbers only, with date, environment and command
+- [dbt docs](https://jinam-shah.github.io/Wikipulse/) - models, columns, tests and lineage
 
 ## Build plan
 
@@ -176,7 +215,7 @@ pytest -m integration       # needs `docker compose up -d` first
 | 0 | Repo setup, docker-compose, CI, docs | Done |
 | 1 | Producer: validation, dead-letter topic, reconnect/resume | Done |
 | 2 | Stream processor: windowed page metrics, idempotent upserts | Done |
-| 3 | Parquet, Iceberg, dbt marts | |
+| 3 | Parquet, Iceberg, dbt marts | Done |
 | 4 | Airflow DAGs | |
 | 5 | Breaking News Radar + pageview confirmation | |
 | 6 | Vandalism model vs Lift Wing | |
@@ -205,6 +244,10 @@ pytest -m integration       # needs `docker compose up -d` first
   revert tags are added in Phase 6.
 - The producer uses `mediawiki.page_change.v1` rather than `recentchange`
   (see [D-007](docs/DECISIONS.md)).
+- The published dbt docs are built on synthetic data in CI, because GitHub Actions has no
+  access to your local stream; the models and tests are identical.
+- The lakehouse runs on demand (`python -m wikipulse.lake run`) until Airflow schedules it
+  hourly in Phase 4.
 - If the producer is down for longer than Wikimedia's stream history, the missed edits
   can't be recovered from EventStreams.
 

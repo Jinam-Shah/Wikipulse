@@ -193,3 +193,109 @@ Newest at the bottom. Format: `D-<number> (<date>, Phase <n>)`.
 - A Prometheus container (`--profile pipeline`, http://localhost:9090) scrapes both,
   whether they run in containers or directly on your machine (`host.docker.internal`).
 - The Grafana dashboard is Phase 13 in the spec; Prometheus' own graph page is enough until then.
+
+## D-017 (2026-11-09, Phase 3) - Hourly exports come from Postgres, not straight from Kafka
+
+- **Problem:** the spec's diagram has hourly Parquet files coming out of the stream processing.
+- **Options:** (a) a second Kafka consumer group that buffers an hour and writes Parquet;
+  (b) export each finished hour from the Postgres `edits` table.
+- **Choice:** (b), `python -m wikipulse.lake export|run`.
+- **Why:** Postgres already holds exactly-once, deduplicated edits with the revert flags
+  the processor computed, so the lake can never disagree with the live app (an
+  integration test checks the gold totals against `page_metrics_5min`). An hour is a
+  simple `WHERE ts` query, and re-exporting it later picks up late events. Option (a)
+  would repeat the dedupe and revert logic.
+- **Safety rules:** unfinished hours are refused; hours older than Postgres retention
+  are refused (they would overwrite a good file with an empty one). Files are written to
+  a temp name and atomically renamed; each hour has a `_manifest.json` with its row count.
+- **Layout:** Hive-style `raw/edits/date=YYYY-MM-DD/hour=HH/edits.parquet` (zstd), so
+  Spark/Databricks (Phase 7) can read it as a partitioned dataset.
+
+## D-018 (2026-11-09, Phase 3) - Iceberg medallion with PyIceberg + SQLite catalog, hourly overwrite
+
+- bronze = raw + `_export_hour`/`_loaded_at`; silver = deduped by `event_id`, typed, with
+  derived columns (`user_type`, `account_age_days`, `comment_length`, `bytes_delta`,
+  `is_revert`, `event_hour`, `ingest_lag_seconds`); gold = `page_hourly`, `wiki_hourly`.
+- **Idempotency:** each hour is written with `overwrite(df, overwrite_filter=<that hour>)`:
+  one atomic snapshot that replaces the hour. Rebuilding never duplicates. Tested,
+  including a late event that updates its hour.
+- **Partitioning:** Iceberg *hidden* partitioning by `day(ts)`; queries filter on the
+  timestamp and Iceberg prunes files. Day rather than hour partitions avoids lots of tiny files.
+- **Time travel:** every hourly load is a snapshot; `table.scan(snapshot_id=...)` reads
+  the old version (tested). Snapshots older than 7 days are expired after each run.
+- **Catalog:** PyIceberg's SQL catalog on a local SQLite file (`data/lake/catalog.db`),
+  as the spec asks. The warehouse is a plain absolute path, which PyIceberg 0.12 handles on
+  Windows (drive letters) as well as Linux.
+- Transformations are SQL run by in-process DuckDB on Arrow tables, which is readable
+  and fast (3 real hours, 14,802 edits, in 2.4 s; METRICS.md).
+- Requires the `pyiceberg-core` extra (Rust) to write partitioned tables.
+
+## D-019 (2026-11-09, Phase 3) - dbt-duckdb reads Iceberg through its PyIceberg plugin
+
+- **Options:** (a) DuckDB's `iceberg` extension (downloaded at runtime, needs metadata
+  file paths); (b) dbt-duckdb's built-in `iceberg` plugin, which loads tables through
+  the same PyIceberg catalog.
+- **Choice:** (b). Sources declare `meta: {plugin: iceberg}`; no extension downloads, and
+  the same catalog config as the Python side. Marts live in `data/lake/analytics.duckdb`.
+- `threads: 1`: the plugin loads sources lazily, and parallel loads raced on creating
+  the same DuckDB schema. Total build time is a few seconds, so this costs little.
+- **Tests (40):** not_null, unique, accepted_values, relationships, value ranges, unique
+  key combinations, source freshness (warn after 3 h, error after 26 h), and a
+  reconciliation test (daily totals from gold equal a direct count of silver edits).
+- **Spec deviation:** Part I says "dbt build against a Postgres service container". Part F
+  chooses dbt + DuckDB for analytics, so CI runs `dbt build` on DuckDB over the Iceberg
+  tables, which are built from Postgres running as a container in CI.
+- **Docs:** `dbt docs generate --static` is published to GitHub Pages by
+  `.github/workflows/dbt-docs.yml`, built on synthetic sample data (CI has no real stream).
+- `python -m wikipulse.lake dbt <args>` sets absolute paths and runs dbt in-process, so
+  it works from any folder on Windows and Linux.
+
+## D-020 (2026-11-09, Phase 3) - Synthetic sample data lives in its own wiki id
+
+- `python -m wikipulse.devtools.sample` writes deterministic synthetic edits for wiki
+  `samplewiki` (never `enwiki`) through the processor's own store, so CI, tests and demos
+  exercise the real code paths without touching real data or calling Wikimedia.
+- Shape (bot/anon shares, reverts, a burst on one page) is modelled on Phase 1 measurements.
+
+## D-021 (2026-11-09, Phase 3) - "is a revert" is not "was reverted"
+
+- `is_revert` / `revert_kind` mark the edit that **does** the reverting. On real data
+  (METRICS.md) registered editors have the highest `is_revert` rate (4.6 %) and anonymous
+  editors only 1.7 %, because reverting is mostly done by experienced editors.
+- The vandalism model (Phase 6) needs the opposite label: "this edit **was** reverted
+  later". That will come from Wikimedia's `mw-reverted` tag plus our sha1 matches, by
+  linking each revert back to the edits it undid. Not the same column, and not to be confused.
+
+## D-022 (2026-11-09, Phase 3) - Cap pyarrow < 26 and duckdb < 2
+
+- **Problem:** on the Windows dev machine, `import pyarrow.parquet` failed with
+  "DLL load failed ... An Application Control policy has blocked this file". Windows
+  (Smart App Control or a similar policy) can block brand-new native files that don't yet
+  have a reputation, and pyarrow 26.0.1 was 6 days old. Older native packages (confluent-kafka,
+  psycopg) loaded fine.
+- **Choice:** pin `pyarrow>=20,<26` and `duckdb>=1.4,<2` (resolving to pyarrow 25.0.1 and
+  duckdb 1.5.6 at the time of writing), so every machine and CI use the same,
+  better-established releases. The code supports both DuckDB 1.x and 2.x APIs; the full
+  test suite passes on both (78 unit + 16 integration).
+- **Revisit** when the next phase needs a newer feature, or once the newer releases are
+  established.
+
+## D-023 (2026-11-09, Phase 3) - A Linux "dev" container for tests, lakehouse and dbt
+
+- **Problem:** on the Windows dev machine, an Application Control policy blocks
+  pyarrow's Parquet DLL in *every* version tried (26.0.1 and 25.0.1), so the lakehouse
+  and its tests can't run natively. Packages without that DLL (producer, processor) run
+  fine on Windows.
+- **Options:** (a) turn off Smart App Control (Windows can't turn it back on without a
+  reinstall); (b) WSL 2 with a Linux Python; (c) a `dev` service in docker-compose
+  (profile `tools`) built from `Dockerfile.dev`.
+- **Choice:** (c). Docker Desktop is already required, nothing on Windows needs to change,
+  and it's the same Linux environment CI and Airflow (Phase 4) use.
+  `docker compose run --rm dev <command>` runs any command with the repo mounted at `/app`
+  (edits are picked up without rebuilding). It talks to `redpanda:9092` and `postgres:5432`
+  on the compose network.
+- The lake directory is a **named volume** (`lake-data`) instead of the Windows bind mount,
+  because SQLite (Iceberg catalog) and DuckDB rely on file locking that bind mounts
+  from Windows don't guarantee. Copy files out with `docker compose cp` if needed.
+- D-022's version caps stay: they cost nothing and keep CI and the container on the
+  same releases.

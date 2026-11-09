@@ -1,0 +1,17 @@
+# WikiPulse developer tools image: run tests, the lakehouse and dbt inside Linux.
+# Used through `docker compose run --rm dev <command>`; the repo is mounted at /app,
+# so code edits on your machine are picked up without rebuilding.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+# Editable install: the package resolves to /app/src, which the mounted repo replaces.
+RUN pip install -e ".[dev]"
+
+CMD ["bash"]
