@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wikipulse"
+version = "0.0.1"
+description = "Real-time Wikipedia intelligence platform"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "Jinam Shah" }]
+# Runtime dependencies are added phase by phase (Phase 1 adds the producer's).
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "integration: needs the docker compose stack running (skipped by default in unit runs)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "scripts", "airflow/dags"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
