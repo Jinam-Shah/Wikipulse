@@ -26,7 +26,25 @@ Source: [Wikimedia APIs/Rate limits](https://www.mediawiki.org/wiki/Wikimedia_AP
 > on shared infrastructure, not a sign the endpoint is gone. From a home connection it
 > should behave normally. Re-test from your machine before Phase 5.
 
-## 1. EventStreams - `recentchange` (main stream)
+## 1. EventStreams - `mediawiki.page_change.v1` (main stream since Phase 1)
+
+- **URL:** `https://stream.wikimedia.org/v2/stream/mediawiki.page_change.v1`
+- **Why this one and not `recentchange`:** see DECISIONS D-007 (it has `page_id`,
+  temporary-account flag, editor experience, and content hashes).
+- **Fields we use:** `meta.id` (event UUID), `meta.dt`, `wiki_id`, `page_change_kind`
+  (`edit`, `create`, `delete`, `move`, ...), `page.page_id/page_title/namespace_id`,
+  `performer.{user_text,user_id,is_temp,is_bot,groups,edit_count,registration_dt}`,
+  `revision.{rev_id,rev_dt,rev_parent_id,rev_size,rev_sha1,is_minor_edit,comment}`,
+  `prior_state.revision.rev_size`.
+- **Resume:** each SSE message has an `id:` (a JSON list of topic/partition/timestamp).
+  We send the last confirmed one as `Last-Event-ID` after a restart. For a fresh start
+  from a point in time, the `?since=<ISO 8601>` query parameter works.
+- **Volume measured 2026-11-09:** about 20 events/s across all wikis; about 2 enwiki
+  article edits/s (METRICS.md).
+- **Verified:** connected and consumed on 2026-11-09, including resume after a kill.
+- One long-lived connection per producer; no parallel connections.
+
+## 1b. EventStreams - `recentchange`
 
 - **URL:** `https://stream.wikimedia.org/v2/stream/recentchange`
 - **Protocol:** Server-Sent Events (SSE). Each message has an `id:` line (a JSON list of
@@ -34,8 +52,7 @@ Source: [Wikimedia APIs/Rate limits](https://www.mediawiki.org/wiki/Wikimedia_AP
 - **Contents:** every change on every wiki: `wiki`, `title`, `user`, `bot`, `type`
   (`edit`, `new`, `log`, `categorize`), `length.old/new`, `revision.old/new`, `comment`,
   `timestamp`, `meta.id`, ...
-- **Use:** the main input to the producer (Phase 1). We filter to the configured wikis
-  (default `enwiki`) and to `type in (edit, new)`.
+- **Use:** not used since Phase 1 (lacks `page_id`; see D-007). Kept here for reference.
 - **Verified:** connected and received events on 2026-11-06.
 - **Docs:** https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service
 

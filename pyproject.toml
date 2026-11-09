@@ -10,8 +10,15 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [{ name = "Jinam Shah" }]
-# Runtime dependencies are added phase by phase (Phase 1 adds the producer's).
-dependencies = []
+# Runtime dependencies are added phase by phase.
+dependencies = [
+  "confluent-kafka>=2.16,<3",
+  "httpx>=0.28,<1",
+  "pydantic>=2.14,<3",
+]
+
+[project.scripts]
+wikipulse-producer = "wikipulse.producer.main:cli"
 
 [project.optional-dependencies]
 dev = [
@@ -24,7 +31,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Integration tests need the docker compose stack; run them with: pytest -m integration
+addopts = "-q -m 'not integration'"
 markers = [
   "integration: needs the docker compose stack running (skipped by default in unit runs)",
 ]

@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from wikipulse import PROJECT_URL, __version__
+
+DEFAULT_CONTACT = "https://github.com/jinam-shah/wikipulse/issues"
+DEFAULT_STREAM_URL = "https://stream.wikimedia.org/v2/stream/mediawiki.page_change.v1"
+
+
+def _csv(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
 @dataclass(frozen=True)
@@ -13,6 +21,15 @@ class Settings:
     kafka_bootstrap: str
     database_url: str
     contact: str
+    # --- producer (Phase 1) ---
+    stream_url: str = DEFAULT_STREAM_URL
+    wikis: tuple[str, ...] = ("enwiki",)
+    namespaces: tuple[int, ...] = (0,)
+    edits_topic: str = "wikipulse.edits.v1"
+    dlq_topic: str = "wikipulse.edits.dlq.v1"
+    topic_partitions: int = 3
+    checkpoint_path: Path = field(default_factory=lambda: Path("data/checkpoints/producer.json"))
+    flush_interval_s: float = 1.0
 
     @property
     def user_agent(self) -> str:
@@ -21,13 +38,20 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    env = os.environ.get
     return Settings(
-        kafka_bootstrap=os.environ.get("WIKIPULSE_KAFKA_BOOTSTRAP", "localhost:19092"),
-        database_url=os.environ.get(
+        kafka_bootstrap=env("WIKIPULSE_KAFKA_BOOTSTRAP", "localhost:19092"),
+        database_url=env(
             "WIKIPULSE_DATABASE_URL",
             "postgresql://wikipulse:wikipulse@localhost:5432/wikipulse",
         ),
-        contact=os.environ.get(
-            "WIKIPULSE_CONTACT", "https://github.com/jinam-shah/wikipulse/issues"
-        ),
+        contact=env("WIKIPULSE_CONTACT", DEFAULT_CONTACT),
+        stream_url=env("WIKIPULSE_STREAM_URL", DEFAULT_STREAM_URL),
+        wikis=_csv(env("WIKIPULSE_WIKIS", "enwiki")),
+        namespaces=tuple(int(n) for n in _csv(env("WIKIPULSE_NAMESPACES", "0"))),
+        edits_topic=env("WIKIPULSE_EDITS_TOPIC", "wikipulse.edits.v1"),
+        dlq_topic=env("WIKIPULSE_DLQ_TOPIC", "wikipulse.edits.dlq.v1"),
+        topic_partitions=int(env("WIKIPULSE_TOPIC_PARTITIONS", "3")),
+        checkpoint_path=Path(env("WIKIPULSE_CHECKPOINT_PATH", "data/checkpoints/producer.json")),
+        flush_interval_s=float(env("WIKIPULSE_FLUSH_INTERVAL_S", "1.0")),
     )

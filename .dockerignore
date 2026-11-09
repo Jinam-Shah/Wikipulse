@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+venv
+data
+airflow
+infra
+tests
+docs
+**/__pycache__
+**/*.egg-info
+.env
+.env.*
