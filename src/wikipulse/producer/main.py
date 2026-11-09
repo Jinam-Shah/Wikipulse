@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from wikipulse.config import Settings, load_settings
+from wikipulse.producer import metrics as pm
 from wikipulse.producer.checkpoint import FileCheckpoint
 from wikipulse.producer.normalize import Filters, Skipped, normalize
 from wikipulse.producer.schemas import DeadLetter, EditEvent
@@ -99,6 +100,10 @@ class EditProducer:
                 on_delivery=self._on_delivery,
             )
             self.stats.produced += 1
+            pm.EVENTS.labels("produced").inc()
+            pm.INGEST_LATENCY.observe(
+                max((result.ingested_at - result.event_dt).total_seconds(), 0.0)
+            )
         elif isinstance(result, DeadLetter):
             self.producer.produce(
                 self.dlq_topic,
@@ -107,9 +112,11 @@ class EditProducer:
                 on_delivery=self._on_delivery,
             )
             self.stats.dead_letters += 1
+            pm.EVENTS.labels("dead_letter").inc()
             log.warning("dead letter (%s): %s", result.reason, result.error[:200])
         else:
             self.stats.skipped[result.reason] += 1
+            pm.EVENTS.labels("skipped").inc()
         if ev.id:
             self.last_event_id = ev.id
         self.producer.poll(0)  # serve delivery callbacks
@@ -126,6 +133,7 @@ class EditProducer:
             )
         if self.checkpoint:
             self.checkpoint.save(self.last_event_id)
+            pm.LAST_CHECKPOINT.set(time.time())
 
     def run(
         self,
@@ -169,6 +177,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "Wikimedia only keeps a limited history",
     )
     p.add_argument("--reset-checkpoint", action="store_true", help="ignore the saved resume point")
+    p.add_argument("--no-metrics-server", action="store_true", help="don't serve /metrics")
     p.add_argument("--log-level", default="INFO")
     return p
 
@@ -190,6 +199,12 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
         settings.dlq_topic,
         settings.topic_partitions,
     )
+    if not args.no_metrics_server:
+        from prometheus_client import start_http_server
+
+        start_http_server(settings.producer_metrics_port)
+        log.info("metrics on http://localhost:%d/metrics", settings.producer_metrics_port)
+
     checkpoint = FileCheckpoint(settings.checkpoint_path, settings.stream_url)
     resume_id = None if args.reset_checkpoint else checkpoint.load()
     params = {"since": args.since} if args.since and not resume_id else {}
@@ -224,8 +239,14 @@ def main(argv: list[str] | None = None, settings: Settings | None = None) -> int
         checkpoint=checkpoint,
         flush_interval_s=settings.flush_interval_s,
     )
+
+    def events():
+        for ev in source.events():
+            pm.RECONNECTS.set(source.reconnects)
+            yield ev
+
     producer.run(
-        source.events(),
+        events(),
         max_events=args.max_events,
         max_seconds=args.max_seconds,
         should_stop=lambda: stopping["flag"],

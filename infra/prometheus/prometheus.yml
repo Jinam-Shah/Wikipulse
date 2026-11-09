@@ -1,0 +1,20 @@
+# Scrapes WikiPulse metrics. Two targets per service:
+#   - the container (docker compose --profile pipeline)
+#   - the same process run directly on your machine (python -m wikipulse...)
+# Whichever isn't running simply shows as "down" on http://localhost:9090/targets.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: producer
+    static_configs:
+      - targets: ["producer:9107"]
+        labels: { runs_in: container }
+      - targets: ["host.docker.internal:9107"]
+        labels: { runs_in: host }
+  - job_name: processor
+    static_configs:
+      - targets: ["processor:9108"]
+        labels: { runs_in: container }
+      - targets: ["host.docker.internal:9108"]
+        labels: { runs_in: host }

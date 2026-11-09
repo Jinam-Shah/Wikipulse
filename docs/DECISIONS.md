@@ -131,3 +131,65 @@ Newest at the bottom. Format: `D-<number> (<date>, Phase <n>)`.
   wikis that still show IPs. In a 180-second enwiki sample, 5.4 % of edits were anonymous.
 - Suppressed usernames (hidden by Wikipedia admins) arrive with no `user_text`; we
   keep the edit with `user_name = null` and never try to recover the name.
+
+## D-013 (2026-11-09, Phase 2) - Plain confluent-kafka consumer, metrics recomputed in Postgres
+
+- **Problem:** turn the edit stream into per-page 5-minute windows (and per-wiki 1-minute
+  windows for the dashboard) with at-least-once delivery and **no double counting on replay**.
+- **Options:** (a) Quix Streams (windowing + RocksDB state, its own checkpointing);
+  (b) plain consumer, windows kept in Python memory, flushed as increments;
+  (c) plain consumer; store raw edits keyed by `event_id`, then *recompute* each
+  affected window from the stored edits in SQL and upsert it.
+- **Choice:** (c).
+- **Why:**
+  - Idempotent by construction: a window row is a pure function of the `edits` table,
+    and an edit is stored once (`ON CONFLICT (event_id) DO NOTHING`). Replays,
+    duplicates, out-of-order and late events all give the same numbers. The integration
+    tests check exactly this (replay, shuffled order, small batches).
+  - One Postgres transaction per batch, then the Kafka offset commit, so the "commit
+    offsets only after a successful DB write" rule holds with no extra state store.
+    Quix keeps its own state and commit schedule, which would put a second source of
+    truth beside Postgres.
+  - The same code works in hosted mode (Phase 13), where a GitHub Actions run drains
+    the topic and exits (`--max-idle-seconds`).
+  - Cost: recomputing a window reads that page's edits in the window (a handful of
+    rows, indexed on `(wiki, page_id, ts)`). Measured throughput is in METRICS.md.
+- Windows use **event time** (`ts`, when Wikipedia saved the revision), via
+  `date_bin('5 minutes', ts, '2000-01-01')`.
+
+## D-014 (2026-11-09, Phase 2) - Retention, late events, schema migrations
+
+- Raw `edits` are kept for `WIKIPULSE_RETENTION_DAYS` (default 7) and pruned by the
+  processor every 10 minutes. Window tables are kept, because they are small.
+- Events older than the retention cutoff are **dropped and counted** (`too_old`): their
+  windows may already be pruned, and recomputing them would undercount.
+- Schema is owned by **Alembic** from the start (the spec names it for the backend).
+  Migrations are hand-written SQL, applied with `python -m wikipulse.db upgrade`;
+  the processor applies them on start, which is safe to repeat.
+- **Neon free tier (to verify in Phase 13):** a full 7 days of enwiki article edits
+  (about 2 edits/s, so about 1.2 million rows) is likely more than Neon's free storage.
+  Hosted mode only samples the stream, so it stores far fewer rows; if needed, hosted
+  mode will use a shorter retention.
+
+## D-015 (2026-11-09, Phase 2) - Revert signals (for now)
+
+- `revert_kind = 'sha1'`: the edit's content hash equals an earlier revision's hash on the
+  same page (an exact revert). Checked over every stored edit of the pages in each batch,
+  so it is correct whatever order events arrive in.
+- `revert_kind = 'comment'`: the edit summary starts with a revert phrase ("Reverted",
+  "Undid revision", "Restored revision", "rv", "rvv", ...; see `processor/revert.py`).
+- **Known gaps:** partial or manual reverts with ordinary summaries are missed; the sha1
+  check only sees revisions within our retention window; a summary starting with "Revert"
+  that isn't really a revert is counted. Phase 6 adds Wikimedia's own revert tags
+  (`mw-reverted`, `mw-undo`, `mw-rollback`, `mw-manual-revert`) from
+  `mediawiki.revision-tags-change` for model labels.
+
+## D-016 (2026-11-09, Phase 2) - Observability: Prometheus now, Grafana in Phase 13
+
+- Producer (`:9107/metrics`) and processor (`:9108/metrics`) expose Prometheus metrics:
+  events by outcome (so the dead-letter rate is
+  `dead_letter / (produced + dead_letter)`), consumer lag per partition, batch duration,
+  end-to-end latency (revision saved -> row committed), last commit time, pruned rows.
+- A Prometheus container (`--profile pipeline`, http://localhost:9090) scrapes both,
+  whether they run in containers or directly on your machine (`host.docker.internal`).
+- The Grafana dashboard is Phase 13 in the spec; Prometheus' own graph page is enough until then.

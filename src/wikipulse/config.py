@@ -30,6 +30,13 @@ class Settings:
     topic_partitions: int = 3
     checkpoint_path: Path = field(default_factory=lambda: Path("data/checkpoints/producer.json"))
     flush_interval_s: float = 1.0
+    producer_metrics_port: int = 9107
+    # --- stream processor (Phase 2) ---
+    consumer_group: str = "wikipulse-processor"
+    batch_size: int = 500
+    batch_timeout_s: float = 1.0
+    retention_days: int = 7
+    processor_metrics_port: int = 9108
 
     @property
     def user_agent(self) -> str:
@@ -54,4 +61,10 @@ def load_settings() -> Settings:
         topic_partitions=int(env("WIKIPULSE_TOPIC_PARTITIONS", "3")),
         checkpoint_path=Path(env("WIKIPULSE_CHECKPOINT_PATH", "data/checkpoints/producer.json")),
         flush_interval_s=float(env("WIKIPULSE_FLUSH_INTERVAL_S", "1.0")),
+        producer_metrics_port=int(env("WIKIPULSE_PRODUCER_METRICS_PORT", "9107")),
+        consumer_group=env("WIKIPULSE_CONSUMER_GROUP", "wikipulse-processor"),
+        batch_size=int(env("WIKIPULSE_BATCH_SIZE", "500")),
+        batch_timeout_s=float(env("WIKIPULSE_BATCH_TIMEOUT_S", "1.0")),
+        retention_days=int(env("WIKIPULSE_RETENTION_DAYS", "7")),
+        processor_metrics_port=int(env("WIKIPULSE_PROCESSOR_METRICS_PORT", "9108")),
     )

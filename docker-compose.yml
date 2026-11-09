@@ -2,6 +2,7 @@
 #
 # Core services (always start):   redpanda, redpanda-console, postgres
 # Pipeline (opt-in):                docker compose --profile pipeline up -d --build
+#   = producer + stream processor + Prometheus (http://localhost:9090)
 # Airflow (opt-in, needs ~4 GB RAM): docker compose --profile airflow up -d
 #
 # Every port and password can be overridden from .env (see .env.example).
@@ -132,6 +133,44 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  processor:
+    build: .
+    image: wikipulse-pipeline:dev
+    container_name: wikipulse-processor
+    profiles: ["pipeline"]
+    # Applies DB migrations on start (safe to repeat), then consumes forever.
+    command: ["python", "-m", "wikipulse.processor"]
+    environment:
+      WIKIPULSE_KAFKA_BOOTSTRAP: redpanda:9092
+      WIKIPULSE_DATABASE_URL: postgresql://${POSTGRES_USER:-wikipulse}:${POSTGRES_PASSWORD:-wikipulse}@postgres:5432/${POSTGRES_DB:-wikipulse}
+      WIKIPULSE_RETENTION_DAYS: ${WIKIPULSE_RETENTION_DAYS:-7}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      producer:
+        condition: service_started
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-v3.16.0}
+    container_name: wikipulse-prometheus
+    profiles: ["pipeline"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      # Lets Prometheus reach processes you run directly on your machine (Linux needs this;
+      # Docker Desktop on Windows/macOS provides it already).
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   # ---------------------------------------------------------------- Airflow
   airflow-init:
     <<: *airflow-common
@@ -184,3 +223,4 @@ volumes:
   redpanda-data:
   postgres-data:
   producer-state:
+  prometheus-data:

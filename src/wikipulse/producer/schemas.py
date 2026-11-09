@@ -115,7 +115,9 @@ class EditEvent(BaseModel):
 class DeadLetter(BaseModel):
     """An event we could not use, published to the dead-letter topic with the reason."""
 
-    reason: Literal["invalid_json", "schema_validation", "unexpected_error"]
+    # processor_validation: a message on the edits topic that the stream processor
+    # couldn't parse (e.g. written by an incompatible producer version).
+    reason: Literal["invalid_json", "schema_validation", "unexpected_error", "processor_validation"]
     error: str
     raw: str  # truncated original payload
     sse_id: str | None
