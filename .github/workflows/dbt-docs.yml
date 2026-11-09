@@ -1,0 +1,56 @@
+# Builds the dbt project on synthetic sample data and publishes its documentation
+# site to GitHub Pages. One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
+name: dbt docs
+
+on:
+  push:
+    branches: [main]
+    paths: ["dbt/**", "src/wikipulse/lake/**", ".github/workflows/dbt-docs.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e .
+      - name: Start Postgres
+        run: docker compose up -d --wait postgres
+      - name: Sample data -> lake -> dbt
+        run: |
+          python -m wikipulse.devtools.sample --hours 6
+          python -m wikipulse.lake run --hours 6
+          python -m wikipulse.lake dbt build
+          python -m wikipulse.lake dbt docs generate --static
+      - name: Prepare site
+        run: |
+          mkdir -p site
+          cp dbt/target/static_index.html site/index.html
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

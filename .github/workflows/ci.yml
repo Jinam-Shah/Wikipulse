@@ -37,7 +37,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Validate compose file (all profiles)
-        run: docker compose --profile pipeline --profile airflow config --quiet
+        run: docker compose --profile pipeline --profile airflow --profile tools config --quiet
       - name: Build pipeline image
         run: docker compose --profile pipeline build producer
       - name: Start core services
@@ -50,8 +50,15 @@ jobs:
           docker exec wikipulse-redpanda rpk topic list
       - name: Install package
         run: pip install -e ".[dev]"
-      - name: Integration tests (real Redpanda)
+      - name: Integration tests (Redpanda, Postgres, Iceberg, dbt)
         run: pytest -m integration
+      - name: Lakehouse on synthetic data (export -> Iceberg -> dbt build)
+        run: |
+          python -m wikipulse.devtools.sample --hours 4
+          python -m wikipulse.lake run --hours 4
+          python -m wikipulse.lake status
+          python -m wikipulse.lake dbt build
+          python -m wikipulse.lake dbt source freshness
       - name: Postgres has both databases
         run: |
           docker exec wikipulse-postgres psql -U wikipulse -d wikipulse -tAc \

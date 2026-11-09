@@ -14,10 +14,18 @@ authors = [{ name = "Jinam Shah" }]
 dependencies = [
   "alembic>=1.20,<2",
   "confluent-kafka>=2.16,<3",
+  "dbt-core>=1.11,<2",
+  "dbt-duckdb>=1.11,<2",
+  # Capped below the newest major releases: Windows Smart App Control blocked the
+  # brand-new pyarrow 26 DLLs on a dev machine (docs/DECISIONS.md D-022).
+  "duckdb>=1.4,<2",
   "httpx>=0.28,<1",
   "prometheus-client>=0.26,<1",
   "psycopg[binary]>=3.3,<4",
+  "pyarrow>=20,<26",
   "pydantic>=2.14,<3",
+  # pyiceberg-core: Rust transforms needed to write partitioned tables.
+  "pyiceberg[sql-sqlite,pyarrow,pyiceberg-core]>=0.12,<0.13",
   "sqlalchemy>=2.1,<3",
 ]
 
@@ -25,6 +33,7 @@ dependencies = [
 wikipulse-producer = "wikipulse.producer.main:cli"
 wikipulse-processor = "wikipulse.processor.main:cli"
 wikipulse-db = "wikipulse.db.__main__:main"
+wikipulse-lake = "wikipulse.lake.__main__:main"
 
 [project.optional-dependencies]
 dev = [

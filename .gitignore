@@ -38,3 +38,9 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+logs/
