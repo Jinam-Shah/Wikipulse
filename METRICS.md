@@ -25,14 +25,38 @@ command used. If a number hasn't been measured yet, the cell says "not measured"
 
 Single snapshot at idle, right after start-up; not a load measurement.
 
-## Streaming (Phases 1-2)
+## Phase 1 - Producer (EventStreams -> Redpanda)
+
+All runs: env `cloud-dev` (4 vCPU, 15 GB RAM), producer run on the host with Python 3.13
+against Redpanda in Docker, filters `WIKIPULSE_WIKIS=enwiki`, `WIKIPULSE_NAMESPACES=0`,
+stream `mediawiki.page_change.v1`. The latency analysis script reads every message back
+from `wikipulse.edits.v1` and compares timestamps inside each message.
+
+| Metric | Value | Date (UTC) | Command |
+|---|---|---|---|
+| Stream volume, all wikis | 3,585 events in 180.4 s (19.9 events/s) | 2026-11-09 02:49-02:52 | `python -m wikipulse.producer --max-seconds 180` |
+| enwiki article edits kept | 355 in 180.4 s (1.97/s) | same run | same |
+| Dead-letter rate | 0 of 3,585 (0.00 %) | same run | same |
+| Latency, Wikimedia emits event -> in Kafka (live) | p50 0.16 s, p95 0.46 s, max 0.71 s (n = 355) | same run | same, then read back the topic: `ingested_at - event_dt` per message |
+| Latency, revision saved on Wikipedia -> in Kafka (live) | p50 2.48 s, p95 7.03 s (n = 355) | same run | `ingested_at - ts` per message |
+| Catch-up throughput (backfill, 30 min of history) | 41,816 events read and validated in 60.1 s (696 events/s); 3,602 enwiki edits produced (59.97/s); 0 dead letters | 2026-11-09 02:52-02:53 | `python -m wikipulse.producer --since <now-30min> --max-seconds 60` |
+| Crash recovery | `kill -9` after 45 s, 20 s down, restart: resumed from checkpoint; 186 messages, 1 duplicate, largest gap between consecutive events 2.9 s (no loss) | 2026-11-09 02:47-02:49 | `python -m wikipulse.producer`, `kill -9 <pid>`, then `python -m wikipulse.producer --max-seconds 40` |
+| Anonymous share (temp accounts + IPs) | 5.4 % (19 of 355) | live run above | from the `is_anon` field |
+| Bot share | 45.6 % (162 of 355) | live run above | from the `is_bot` field |
+
+Notes:
+- The catch-up figure is limited by how fast Wikimedia streams history to one connection,
+  not by our CPU; it is a single 60-second sample.
+- During the crash-recovery catch-up, p95 `event_dt -> Kafka` latency was 18.6 s, because
+  backlog events are read late by design.
+
+## Streaming (Phase 2)
 
 | Metric | Value | Date | Env | Command |
 |---|---|---|---|---|
-| Events/second processed | not measured | | | |
+| Stream processor events/second | not measured | | | |
 | End-to-end latency (Wikipedia -> DB) | not measured | | | |
 | Consumer lag under load | not measured | | | |
-| Dead-letter rate | not measured | | | |
 
 ## Data platform (Phases 3-4)
 
@@ -60,5 +84,7 @@ Single snapshot at idle, right after start-up; not a load measurement.
 
 | Suite | Count | Date | Command |
 |---|---|---|---|
-| pytest | 2 passed | 2026-11-06 | `pytest` (cloud-dev) |
+| pytest (Phase 0) | 2 passed | 2026-11-06 | `pytest` (cloud-dev) |
+| pytest unit (Phase 1) | 43 passed | 2026-11-09 | `pytest` (cloud-dev) |
+| pytest integration (Phase 1) | 1 passed | 2026-11-09 | `pytest -m integration` with the compose stack up (cloud-dev) |
 | Playwright | not measured | | |

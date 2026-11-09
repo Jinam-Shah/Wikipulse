@@ -1,6 +1,7 @@
 # WikiPulse - full streaming mode (local Docker)
 #
 # Core services (always start):   redpanda, redpanda-console, postgres
+# Pipeline (opt-in):                docker compose --profile pipeline up -d --build
 # Airflow (opt-in, needs ~4 GB RAM): docker compose --profile airflow up -d
 #
 # Every port and password can be overridden from .env (see .env.example).
@@ -110,6 +111,27 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # --------------------------------------------------------------- Pipeline
+  producer:
+    build: .
+    image: wikipulse-pipeline:dev
+    container_name: wikipulse-producer
+    profiles: ["pipeline"]
+    command: ["python", "-m", "wikipulse.producer"]
+    environment:
+      WIKIPULSE_KAFKA_BOOTSTRAP: redpanda:9092
+      WIKIPULSE_CONTACT: ${WIKIPULSE_CONTACT:-https://github.com/jinam-shah/wikipulse/issues}
+      WIKIPULSE_WIKIS: ${WIKIPULSE_WIKIS:-enwiki}
+      WIKIPULSE_NAMESPACES: ${WIKIPULSE_NAMESPACES:-0}
+      WIKIPULSE_CHECKPOINT_PATH: /app/data/checkpoints/producer.json
+    volumes:
+      # Named volume so the resume checkpoint survives container restarts.
+      - producer-state:/app/data
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ---------------------------------------------------------------- Airflow
   airflow-init:
     <<: *airflow-common
@@ -161,3 +183,4 @@ services:
 volumes:
   redpanda-data:
   postgres-data:
+  producer-state:

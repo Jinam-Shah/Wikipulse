@@ -4,8 +4,9 @@
 spots breaking news from sudden edit spikes, explains in plain English what changed and why,
 detects edit wars and likely vandalism, and alerts users when a topic they follow starts moving.
 
-> **Status:** Phase 0 - project skeleton. The local stack (Redpanda, Redpanda Console,
-> Postgres, Airflow) starts and passes a smoke test; CI runs lint, tests and a compose smoke test.
+> **Status:** Phase 1 - live edits flow from Wikipedia into Kafka. The producer reads
+> Wikimedia EventStreams, validates every event, sends bad ones to a dead-letter topic,
+> reconnects on its own, and resumes after a crash without losing events.
 > Features arrive phase by phase - see [the build plan](#build-plan).
 
 ## Architecture
@@ -35,7 +36,7 @@ flowchart LR
 
 | Mode | What runs | Where | Status |
 |---|---|---|---|
-| **Full streaming mode** | Redpanda, producer, stream processor, Airflow, Prometheus, Grafana | Your machine, `docker compose` | Infrastructure only (Phase 0) |
+| **Full streaming mode** | Redpanda, producer, stream processor, Airflow, Prometheus, Grafana | Your machine, `docker compose` | Redpanda, Postgres, Airflow and the producer work |
 | **Hosted mode** | GitHub Actions every 15 min samples the stream, processes it with the same code, writes to Neon; app on Vercel, API on Render | Free cloud tiers | Not built yet (Phase 13) |
 
 Hosted mode samples a few minutes of the stream per run, so its trend detection is less
@@ -84,6 +85,36 @@ python scripts/smoke_test.py --airflow
 
 Stop everything: `docker compose --profile airflow down` (add `-v` to delete the data volumes).
 
+### Stream live Wikipedia edits into Kafka (Phase 1)
+
+Option A - run the producer on your machine (easiest to watch and stop with Ctrl+C):
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m wikipulse.producer --max-seconds 120
+```
+
+Option B - run it as a container next to Redpanda (keeps running in the background):
+
+```bash
+docker compose --profile pipeline up -d --build
+docker logs -f wikipulse-producer
+```
+
+Then open Redpanda Console (http://localhost:8088) -> Topics -> `wikipulse.edits.v1`,
+or print a few messages with
+`docker exec wikipulse-redpanda rpk topic consume wikipulse.edits.v1 -n 3`.
+
+Useful flags: `--max-events N`, `--max-seconds S`, `--since 2026-11-09T00:00:00Z`
+(start from a past time when there is no checkpoint), `--reset-checkpoint`.
+The resume point is stored in `data/checkpoints/producer.json` (host) or the
+`producer-state` volume (container).
+
+| Topic | Contents |
+|---|---|
+| `wikipulse.edits.v1` | One validated edit per message, key `<wiki>:<page_id>` (schema: `EditEvent` in `src/wikipulse/producer/schemas.py`) |
+| `wikipulse.edits.dlq.v1` | Events that failed validation, with the reason and the raw payload |
+
 ### Python development
 
 ```powershell
@@ -92,7 +123,8 @@ python -m venv .venv
 pip install -e ".[dev]"
 ruff check .
 ruff format --check .
-pytest
+pytest                      # unit tests
+pytest -m integration       # needs `docker compose up -d` first
 ```
 
 ## Project docs
@@ -106,7 +138,7 @@ pytest
 | Phase | Work | Status |
 |---|---|---|
 | 0 | Repo setup, docker-compose, CI, docs | Done |
-| 1 | Producer: validation, dead-letter topic, reconnect/resume | |
+| 1 | Producer: validation, dead-letter topic, reconnect/resume | Done |
 | 2 | Stream processor: windowed page metrics, idempotent upserts | |
 | 3 | Parquet, Iceberg, dbt marts | |
 | 4 | Airflow DAGs | |
@@ -133,7 +165,11 @@ pytest
 
 ## Known limitations
 
-- Phase 0: no application features yet.
+- Events reach Kafka, but nothing consumes them yet (stream processor arrives in Phase 2).
+- The producer uses `mediawiki.page_change.v1` rather than `recentchange`
+  (see [D-007](docs/DECISIONS.md)).
+- If the producer is down for longer than Wikimedia's stream history, the missed edits
+  can't be recovered from EventStreams.
 
 ## License
 

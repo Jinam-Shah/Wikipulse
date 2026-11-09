@@ -36,8 +36,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Validate compose file (including the airflow profile)
-        run: docker compose --profile airflow config --quiet
+      - name: Validate compose file (all profiles)
+        run: docker compose --profile pipeline --profile airflow config --quiet
+      - name: Build pipeline image
+        run: docker compose --profile pipeline build producer
       - name: Start core services
         run: docker compose up -d --wait --wait-timeout 180
       - name: Smoke test
@@ -46,6 +48,10 @@ jobs:
         run: |
           docker exec wikipulse-redpanda rpk topic create ci-smoke
           docker exec wikipulse-redpanda rpk topic list
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - name: Integration tests (real Redpanda)
+        run: pytest -m integration
       - name: Postgres has both databases
         run: |
           docker exec wikipulse-postgres psql -U wikipulse -d wikipulse -tAc \
