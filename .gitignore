@@ -1,0 +1,40 @@
+# Secrets - never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Data produced locally (Parquet, Iceberg warehouse, DuckDB, MLflow runs)
+data/
+*.parquet
+*.duckdb
+*.duckdb.wal
+mlruns/
+mlartifacts/
+
+# Airflow runtime files
+airflow/logs/*
+!airflow/logs/.gitkeep
+
+# Node / Next.js (Phase 11)
+node_modules/
+.next/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

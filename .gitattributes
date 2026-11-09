@@ -1,0 +1,6 @@
+# Keep LF line endings so files mounted into Linux containers work on Windows checkouts.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.parquet binary
