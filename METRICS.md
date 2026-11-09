@@ -149,13 +149,23 @@ Env `cloud-dev`, `docker compose --profile airflow up -d`, image `wikipulse-airf
 
 Not yet measured: a week of unattended scheduled runs (success rate, duration trend) on the laptop.
 
-## Breaking News Radar (Phase 5)
+## Phase 5 - Breaking News Radar
 
-| Metric | Value | Date | Command |
-|---|---|---|---|
-| Trends detected per week | not measured | | |
-| Share confirmed by pageviews | not measured | | |
-| Lead-time findings | not measured | | |
+Env `cloud-dev`. Input: 26 h of **real enwiki article edits** replayed from EventStreams
+(2026-11-08 18:00 UTC to 2026-11-09 20:15 UTC), `python -m wikipulse.producer --since 2026-11-08T18:00:00Z`
++ `python -m wikipulse.processor` -> **132,751 edits**, 0 dead letters, 0 duplicates.
+
+| Metric | Value | Command |
+|---|---|---|
+| Replay throughput (producer, history) | 1,502,781 stream events read in 600 s (2,505/s) while catching up | producer log |
+| Radar: 26 h of windows (about 315) | 7.7 s wall | `time python -m wikipulse.radar --rebuild --once --no-pageviews` |
+| Trends found, final rules (D-029 + D-032) | **8 in 26 h**; 6 news, 2 vandalism false positives (manual review) | `select ... from trends` |
+| Trends found, before the revert gate | 20 in 26 h; 12 started in revert-heavy windows | same, before D-032 |
+| Lead time, event time known | Russell Brand sentencing **+4 to +8 min**; NASCAR result **12 min before** first results article | docs/LEAD_TIME.md |
+| Lead time vs first news report (death) | Dževad Prekazi **+95 min** (Wikipedia itself updated after 97 min) | docs/LEAD_TIME.md |
+| Share confirmed by page views | **not measured**: Pageviews API returned 429 from the cloud IP | run `python -m wikipulse.radar --once` from a home connection |
+| Pageview publication delay | hourly dump for 16:00-17:00 UTC published 18:51 UTC (about 2 h after the hour) | `dumps.wikimedia.org/other/pageviews/2026/2026-11/` listing |
+| EventStreams history available | >= 10 days (`since=` 2026-10-30 returned events from then) | `curl ...?since=` |
 
 ## Vandalism model (Phase 6)
 
@@ -179,4 +189,6 @@ Not yet measured: a week of unattended scheduled runs (success rate, duration tr
 | dbt models / data tests (Phase 3) | 9 / 40 (+3 source freshness checks) | 2026-11-09 | `python -m wikipulse.lake dbt build` |
 | pytest unit (Phase 4) | 91 passed | 2026-11-09 | `pytest` (cloud-dev) |
 | pytest integration (Phase 4) | 20 passed | 2026-11-09 | `pytest -m integration` (cloud-dev) |
+| pytest unit (Phase 5) | 118 passed | 2026-11-09 | `pytest` (cloud-dev) |
+| pytest integration (Phase 5) | 23 passed | 2026-11-09 | `pytest -m integration` (cloud-dev) |
 | Playwright | not measured | | |

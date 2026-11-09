@@ -18,3 +18,9 @@ scrape_configs:
         labels: { runs_in: container }
       - targets: ["host.docker.internal:9108"]
         labels: { runs_in: host }
+  - job_name: radar
+    static_configs:
+      - targets: ["radar:9109"]
+        labels: { runs_in: container }
+      - targets: ["host.docker.internal:9109"]
+        labels: { runs_in: host }

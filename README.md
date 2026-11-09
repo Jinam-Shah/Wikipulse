@@ -4,10 +4,11 @@
 spots breaking news from sudden edit spikes, explains in plain English what changed and why,
 detects edit wars and likely vandalism, and alerts users when a topic they follow starts moving.
 
-> **Status:** Phase 4 - live Wikipedia edits flow through Kafka into Postgres (5-minute
-> page windows); Airflow then builds the lakehouse every hour (Parquet, Iceberg
-> bronze/silver/gold, tested dbt marts on DuckDB), runs data-quality checks, and keeps a
-> weekly training snapshot.
+> **Status:** Phase 5 - the **Breaking News Radar** flags pages whose edit activity
+> suddenly spikes among several editors, confirms them against Wikipedia page views, and
+> has a measured lead time against real news events ([docs/LEAD_TIME.md](docs/LEAD_TIME.md)).
+> Underneath: Kafka -> Postgres 5-minute windows -> hourly Airflow lakehouse (Iceberg + dbt)
+> with data-quality checks.
 > Features arrive phase by phase - see [the build plan](#build-plan).
 
 ## Architecture
@@ -182,6 +183,27 @@ Re-running an hour replaces it (no duplicates); every load is an Iceberg snapsho
 time-travel to. **dbt docs:** https://jinam-shah.github.io/Wikipulse/ (built on synthetic
 sample data by GitHub Actions; see "Known limitations").
 
+### Breaking News Radar (Phase 5)
+
+The radar runs with the pipeline (`docker compose --profile pipeline up -d --build`) or
+on its own: `python -m wikipulse.radar` (Windows: `docker compose run --rm dev python -m wikipulse.radar`).
+Every 5-minute window it compares each page's edits with that page's normal level
+(6-hour EWMA) and opens a **trend** when the jump is large (z >= 4) **and** at least 3
+different people made 5+ edits (mostly not bots). Trends end after 15 quiet minutes.
+Page views confirm them a few hours later, once Wikimedia publishes hourly views.
+
+```bash
+docker exec -it wikipulse-postgres psql -U wikipulse -c "select started_at, page_title, peak_edits, distinct_editors, round(peak_zscore::numeric,1) as z, views_status from trends order by started_at desc limit 15"
+```
+
+Replay history (EventStreams keeps about 10 days) and re-run the radar on it:
+
+```bash
+python -m wikipulse.producer --since 2026-11-08T18:00:00Z --reset-checkpoint --max-seconds 900
+python -m wikipulse.processor --max-idle-seconds 30
+python -m wikipulse.radar --rebuild --once --no-pageviews
+```
+
 ### Schedule it with Airflow (Phase 4)
 
 ```bash
@@ -234,6 +256,7 @@ docker compose run --rm dev pytest -m integration
 - [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md) - every Wikimedia endpoint, its limits, and how we follow the rules
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) - design decisions and why
 - [`METRICS.md`](METRICS.md) - measured numbers only, with date, environment and command
+- [`docs/LEAD_TIME.md`](docs/LEAD_TIME.md) - how early the radar flags real news events
 - [dbt docs](https://jinam-shah.github.io/Wikipulse/) - models, columns, tests and lineage
 
 ## Build plan
@@ -245,7 +268,7 @@ docker compose run --rm dev pytest -m integration
 | 2 | Stream processor: windowed page metrics, idempotent upserts | Done |
 | 3 | Parquet, Iceberg, dbt marts | Done |
 | 4 | Airflow DAGs | Done |
-| 5 | Breaking News Radar + pageview confirmation | |
+| 5 | Breaking News Radar + pageview confirmation | Done |
 | 6 | Vandalism model vs Lift Wing | |
 | 7 | Databricks / Delta Lake notebook | |
 | 8 | Edit War Detector, What Changed | |

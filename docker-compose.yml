@@ -2,7 +2,7 @@
 #
 # Core services (always start):   redpanda, redpanda-console, postgres
 # Pipeline (opt-in):                docker compose --profile pipeline up -d --build
-#   = producer + stream processor + Prometheus (http://localhost:9090)
+#   = producer + stream processor + radar + Prometheus (http://localhost:9090)
 # Airflow (opt-in, needs ~4 GB RAM): docker compose --profile airflow up -d
 # Dev tools (tests, lakehouse, dbt in Linux): docker compose run --rm dev <command>
 #
@@ -167,6 +167,23 @@ services:
       postgres:
         condition: service_healthy
       producer:
+        condition: service_started
+    restart: unless-stopped
+
+  radar:
+    image: wikipulse-pipeline:dev
+    container_name: wikipulse-radar
+    profiles: ["pipeline"]
+    # Breaking News Radar: evaluates each closed 5-minute window, confirms trends with
+    # the Pageviews API (rate-limited, cached).
+    command: ["python", "-m", "wikipulse.radar"]
+    environment:
+      WIKIPULSE_DATABASE_URL: postgresql://${POSTGRES_USER:-wikipulse}:${POSTGRES_PASSWORD:-wikipulse}@postgres:5432/${POSTGRES_DB:-wikipulse}
+      WIKIPULSE_CONTACT: ${WIKIPULSE_CONTACT:-https://github.com/jinam-shah/wikipulse/issues}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      processor:
         condition: service_started
     restart: unless-stopped
 

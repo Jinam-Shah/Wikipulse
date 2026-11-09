@@ -42,6 +42,8 @@ Source: [Wikimedia APIs/Rate limits](https://www.mediawiki.org/wiki/Wikimedia_AP
 - **Volume measured 2026-11-09:** about 20 events/s across all wikis; about 2 enwiki
   article edits/s (METRICS.md).
 - **Verified:** connected and consumed on 2026-11-09, including resume after a kill.
+- **History:** `?since=` 10 days back still returned events from then (checked 2026-11-09),
+  so a day or more of real history can be replayed for analysis (Phase 5 lead time).
 - One long-lived connection per producer; no parallel connections.
 
 ## 1b. EventStreams - `recentchange`
@@ -87,9 +89,12 @@ The live stream list is at `https://stream.wikimedia.org/?spec`. On 2026-11-06 i
 - **URL:** `https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/{project}/{access}/{agent}/{article}/{granularity}/{start}/{end}`
   (`granularity` = `hourly` or `daily`)
 - **Use:** confirm a trend reflects real public interest (Phase 5).
-- **Caveat:** hourly data appears with a delay (typically an hour or more), so confirmation
-  is necessarily later than detection. We'll measure the actual delay in Phase 5.
-- **Status 2026-11-06:** throttled (429) from the shared cloud IP; re-test locally.
+- **Delay (measured 2026-11-09):** the public hourly dump for 16:00-17:00 UTC
+  (`dumps.wikimedia.org/other/pageviews/2026/2026-11/pageviews-20261109-160000.gz`) was
+  published at 18:51 UTC, about 2 h after the hour ended. The radar therefore treats hourly
+  views as possibly incomplete for 4 h (D-030).
+- **Used by:** `wikipulse.radar.pageviews` (one request per trend, cached in `page_views_hourly`).
+- **Status:** still 429 from the shared cloud IP on 2026-11-09; works from a home connection.
 
 ## 6. Lift Wing - revert-risk model
 
