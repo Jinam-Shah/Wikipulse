@@ -85,7 +85,7 @@ def test_routes_valid_skipped_and_invalid(tmp_path):
     edits = kafka.on("edits")
     assert [json.loads(m["value"])["event_id"] for m in edits] == ["evt-1", "evt-4"]
     assert edits[0]["key"] == b"enwiki:11"
-    assert edits[0]["headers"] == [("schema_version", b"1")]
+    assert edits[0]["headers"] == [("schema_version", b"2")]
 
     dlq = kafka.on("dlq")
     assert len(dlq) == 1

@@ -5,7 +5,11 @@ ARG AIRFLOW_IMAGE=apache/airflow:3.4.0-python3.12
 FROM ${AIRFLOW_IMAGE}
 
 USER root
-RUN mkdir -p /opt/wikipulse/data && chown -R airflow:0 /opt/wikipulse
+# libgomp1: OpenMP runtime that LightGBM needs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/wikipulse/data && chown -R airflow:0 /opt/wikipulse
 USER airflow
 
 COPY --chown=airflow:0 pyproject.toml README.md LICENSE /opt/wikipulse/

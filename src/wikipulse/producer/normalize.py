@@ -88,6 +88,7 @@ def to_edit_event(pc: PageChange, ingested_at: datetime) -> EditEvent:
         revision_id=pc.revision.rev_id,
         parent_revision_id=pc.revision.rev_parent_id or None,
         rev_sha1=pc.revision.rev_sha1,
+        parent_rev_sha1=prior.rev_sha1 if prior else None,
         user_name=user.user_text,
         user_id=user.user_id or None,
         is_bot=user.is_bot or "bot" in user.groups,

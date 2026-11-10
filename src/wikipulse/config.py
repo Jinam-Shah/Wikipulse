@@ -38,6 +38,7 @@ class Settings:
     retention_days: int = 7
     processor_metrics_port: int = 9108
     radar_metrics_port: int = 9109
+    scorer_metrics_port: int = 9110
     # --- lakehouse (Phase 3) ---
     lake_dir: Path = field(default_factory=lambda: Path("data/lake"))
 
@@ -71,5 +72,6 @@ def load_settings() -> Settings:
         retention_days=int(env("WIKIPULSE_RETENTION_DAYS", "7")),
         processor_metrics_port=int(env("WIKIPULSE_PROCESSOR_METRICS_PORT", "9108")),
         radar_metrics_port=int(env("WIKIPULSE_RADAR_METRICS_PORT", "9109")),
+        scorer_metrics_port=int(env("WIKIPULSE_SCORER_METRICS_PORT", "9110")),
         lake_dir=Path(env("WIKIPULSE_LAKE_DIR", "data/lake")),
     )

@@ -25,9 +25,9 @@ from wikipulse.producer.schemas import EditEvent
 
 EDIT_COLUMNS = (
     "event_id, wiki, change_kind, page_id, page_title, namespace, revision_id, "
-    "parent_revision_id, rev_sha1, user_name, user_id, is_bot, is_anon, user_edit_count, "
-    "user_registered_at, comment, is_minor, bytes_old, bytes_new, ts, event_dt, ingested_at, "
-    "revert_kind"
+    "parent_revision_id, rev_sha1, parent_rev_sha1, user_name, user_id, is_bot, is_anon, "
+    "user_edit_count, user_registered_at, comment, is_minor, bytes_old, bytes_new, ts, "
+    "event_dt, ingested_at, revert_kind"
 )
 
 INSERT_EDITS = f"""
