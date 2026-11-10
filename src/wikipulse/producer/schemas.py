@@ -13,7 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = 1
+# v2 (Phase 6): adds parent_rev_sha1 (optional, so v1 messages still validate).
+SCHEMA_VERSION = 2
 
 
 class _Lenient(BaseModel):
@@ -92,6 +93,9 @@ class EditEvent(BaseModel):
     revision_id: int
     parent_revision_id: int | None
     rev_sha1: str | None  # content hash: identical hashes reveal exact reverts
+    # Content hash of the revision this edit was made on top of. A later edit whose
+    # rev_sha1 equals it restored the page to before this edit, i.e. reverted it.
+    parent_rev_sha1: str | None = None
     user_name: str | None
     user_id: int | None
     is_bot: bool

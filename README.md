@@ -4,7 +4,9 @@
 spots breaking news from sudden edit spikes, explains in plain English what changed and why,
 detects edit wars and likely vandalism, and alerts users when a topic they follow starts moving.
 
-> **Status:** Phase 5 - the **Breaking News Radar** flags pages whose edit activity
+> **Status:** Phase 6 - every edit gets a **Vandalism Risk Score** (LightGBM, evaluated on
+> newer data than it was trained on and compared with Wikimedia's own Lift Wing model:
+> [results](#vandalism-risk-score-phase-6)). Phase 5's **Breaking News Radar** flags pages whose edit activity
 > suddenly spikes among several editors, confirms them against Wikipedia page views, and
 > has a measured lead time against real news events ([docs/LEAD_TIME.md](docs/LEAD_TIME.md)).
 > Underneath: Kafka -> Postgres 5-minute windows -> hourly Airflow lakehouse (Iceberg + dbt)
@@ -204,6 +206,32 @@ python -m wikipulse.processor --max-idle-seconds 30
 python -m wikipulse.radar --rebuild --once --no-pageviews
 ```
 
+### Vandalism Risk Score (Phase 6)
+
+Each edit gets `risk_score`: the model's estimated probability that the edit will be
+reverted within 6 hours. **It's an automated estimate, not an accusation.**
+
+```bash
+# Train (time-based split, Lift Wing comparison, MLflow). Windows: prefix with
+# "docker compose run --rm dev" (scikit-learn/LightGBM need the Linux container there).
+python -m wikipulse.ml.train
+# Score new edits continuously (also runs in the pipeline as the `scorer` container)
+python -m wikipulse.ml.score
+# MLflow UI on http://localhost:5000
+docker compose --profile tools up -d mlflow
+```
+
+Lift Wing scores for the comparison come from Wikimedia's revert-risk stream
+(`liftwing` container, or `python -m wikipulse.ml.liftwing_stream`). Results are in
+[METRICS.md](METRICS.md#phase-6---vandalism-risk-score). How labels and features are
+built, and what they can't capture: D-033 to D-037 in [docs/DECISIONS.md](docs/DECISIONS.md).
+
+High-risk edits right now:
+
+```bash
+docker exec -it wikipulse-postgres psql -U wikipulse -c "select e.ts, e.page_title, round(e.risk_score::numeric,2) risk, e.comment from edits e, model_runs m where m.is_current and e.risk_score >= m.threshold order by e.ts desc limit 10"
+```
+
 ### Schedule it with Airflow (Phase 4)
 
 ```bash
@@ -215,7 +243,7 @@ Open http://localhost:8081, then **unpause** the DAGs (toggle on the left):
 | DAG | Schedule (UTC) | Tasks |
 |---|---|---|
 | `wikipulse_hourly_lake` | every hour | `export_and_build_lake` (last 3 hours) -> `dbt_build` -> `dbt_source_freshness` + `data_quality_checks` |
-| `wikipulse_weekly_retrain` | Sundays 03:17 | `snapshot_training_data` (7 days of silver) -> `train_model` (skipped until Phase 6) |
+| `wikipulse_weekly_retrain` | Sundays 03:17 | `snapshot_training_data` (7 days of silver) -> `train_model` (vandalism model; skipped if there isn't enough data yet) |
 
 Run one immediately instead of waiting: **Trigger** in the UI, or
 `docker compose exec airflow-scheduler airflow dags test wikipulse_hourly_lake`.
@@ -269,7 +297,7 @@ docker compose run --rm dev pytest -m integration
 | 3 | Parquet, Iceberg, dbt marts | Done |
 | 4 | Airflow DAGs | Done |
 | 5 | Breaking News Radar + pageview confirmation | Done |
-| 6 | Vandalism model vs Lift Wing | |
+| 6 | Vandalism model vs Lift Wing | Done |
 | 7 | Databricks / Delta Lake notebook | |
 | 8 | Edit War Detector, What Changed | |
 | 9 | AI explanations, Story Clusters | |
@@ -291,8 +319,9 @@ docker compose run --rm dev pytest -m integration
 
 ## Known limitations
 
-- Revert detection uses content hashes and edit summaries only (D-015); Wikimedia's own
-  revert tags are added in Phase 6.
+- Revert detection and the model's labels use exact content-hash reverts (D-015, D-034):
+  partial or manual rewrites aren't counted, and good-faith edits reverted in content
+  disputes count as "reverted". The model has no diff-text features (D-035).
 - The producer uses `mediawiki.page_change.v1` rather than `recentchange`
   (see [D-007](docs/DECISIONS.md)).
 - The published dbt docs are built on synthetic data in CI, because GitHub Actions has no

@@ -84,11 +84,17 @@ def main(argv: list[str] | None = None) -> int:
         return run_dbt(paths, args.dbt_args)
 
     if args.cmd == "snapshot":
+        from pyiceberg.exceptions import NoSuchTableError
+
         from wikipulse.lake.export import floor_hour
         from wikipulse.lake.snapshot import training_snapshot
 
         end = _parse_dt(args.end) if args.end else floor_hour(datetime.now(UTC))
-        snap = training_snapshot(paths, end, args.days)
+        try:
+            snap = training_snapshot(paths, end, args.days)
+        except NoSuchTableError:
+            print("no silver.edits table yet (the hourly lake DAG hasn't run); skipping")
+            return 99  # Airflow's BashOperator: skipped
         print(
             f"snapshot rows={snap.rows} iceberg_snapshot={snap.iceberg_snapshot_id} -> {snap.path}"
         )

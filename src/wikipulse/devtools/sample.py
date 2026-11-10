@@ -34,6 +34,7 @@ def generate(
     registered = [f"SampleEditor{i}" for i in range(1, 61)]
     bots = [f"SampleBot{i}" for i in range(1, 4)]
     page_state: dict[int, list[str]] = {}  # page -> history of content hashes
+    history_anon: dict[int, bool] = {}  # page -> was the latest edit anonymous?
     sizes: dict[int, int] = {}
     burst_hour = start + timedelta(hours=hours // 2)
     events: list[EditEvent] = []
@@ -65,7 +66,8 @@ def generate(
             created = not history and rng.random() < 0.05
             old_size = None if created else sizes.get(page, rng.randint(2_000, 60_000))
             comment = rng.choice(["copyedit", "added source", "update", "fix typo", "", "expand"])
-            if len(history) >= 2 and rng.random() < 0.04:
+            revert_p = 0.12 if (len(history) >= 2 and history_anon.get(page)) else 0.03
+            if len(history) >= 2 and rng.random() < revert_p:
                 sha1 = history[-2]  # exact revert to the previous version
                 comment = f"Reverted edits by {user} to last version"
                 new_size = old_size - rng.randint(-50, 400) if old_size else 1000
@@ -74,7 +76,9 @@ def generate(
                 new_size = max((old_size or 0) + rng.randint(-300, 900), 50)
                 if rng.random() < 0.01:
                     comment = "rv vandalism"
+            parent_sha1 = history[-1] if history else None
             history.append(sha1)
+            history_anon[page] = is_anon
             sizes[page] = new_size
             iso = ts.isoformat()
             events.append(
@@ -88,6 +92,7 @@ def generate(
                     revision_id=10_000_000 + n,
                     parent_revision_id=None if created else 10_000_000 + n - 1,
                     rev_sha1=sha1,
+                    parent_rev_sha1=parent_sha1,
                     user_name=user,
                     user_id=user_id or None,
                     is_bot=is_bot,

@@ -54,12 +54,14 @@ jobs:
         run: pytest -m integration
       - name: Lakehouse on synthetic data (export -> Iceberg -> dbt build)
         run: |
-          python -m wikipulse.devtools.sample --hours 4
+          python -m wikipulse.devtools.sample --hours 8
           python -m wikipulse.lake run --hours 4
           python -m wikipulse.lake status
           python -m wikipulse.lake dbt build
           python -m wikipulse.lake dbt source freshness
           python -m wikipulse.radar --once --no-pageviews --no-metrics-server
+          WIKIPULSE_WIKIS=samplewiki python -m wikipulse.ml.train --label-window-hours 2
+          python -m wikipulse.ml.score --once --no-metrics-server
       - name: Postgres has both databases
         run: |
           docker exec wikipulse-postgres psql -U wikipulse -d wikipulse -tAc \

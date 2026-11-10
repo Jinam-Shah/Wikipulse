@@ -2,7 +2,7 @@
 #
 # Core services (always start):   redpanda, redpanda-console, postgres
 # Pipeline (opt-in):                docker compose --profile pipeline up -d --build
-#   = producer + stream processor + radar + Prometheus (http://localhost:9090)
+#   = producer + stream processor + radar + Lift Wing scores + risk scorer + Prometheus
 # Airflow (opt-in, needs ~4 GB RAM): docker compose --profile airflow up -d
 # Dev tools (tests, lakehouse, dbt in Linux): docker compose run --rm dev <command>
 #
@@ -187,6 +187,43 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  liftwing:
+    image: wikipulse-pipeline:dev
+    container_name: wikipulse-liftwing
+    profiles: ["pipeline"]
+    # Wikimedia's own revert-risk scores (for the model comparison), from EventStreams.
+    command: ["python", "-m", "wikipulse.ml.liftwing_stream"]
+    environment:
+      WIKIPULSE_DATABASE_URL: postgresql://${POSTGRES_USER:-wikipulse}:${POSTGRES_PASSWORD:-wikipulse}@postgres:5432/${POSTGRES_DB:-wikipulse}
+      WIKIPULSE_CONTACT: ${WIKIPULSE_CONTACT:-https://github.com/jinam-shah/wikipulse/issues}
+      WIKIPULSE_WIKIS: ${WIKIPULSE_WIKIS:-enwiki}
+      WIKIPULSE_CHECKPOINT_PATH: /app/data/checkpoints/producer.json
+    volumes:
+      - liftwing-state:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scorer:
+    image: wikipulse-pipeline:dev
+    container_name: wikipulse-scorer
+    profiles: ["pipeline"]
+    # Scores every new edit with the current vandalism model (trained by
+    # `python -m wikipulse.ml.train` or the weekly Airflow DAG; read from the lake volume).
+    command: ["python", "-m", "wikipulse.ml.score"]
+    environment:
+      WIKIPULSE_DATABASE_URL: postgresql://${POSTGRES_USER:-wikipulse}:${POSTGRES_PASSWORD:-wikipulse}@postgres:5432/${POSTGRES_DB:-wikipulse}
+      WIKIPULSE_LAKE_DIR: /opt/wikipulse/data/lake
+    volumes:
+      - lake-data:/opt/wikipulse/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      processor:
+        condition: service_started
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION:-v3.16.0}
     container_name: wikipulse-prometheus
@@ -236,6 +273,25 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+
+  mlflow:
+    # MLflow UI for the vandalism-model runs: http://localhost:5000
+    image: ghcr.io/mlflow/mlflow:${MLFLOW_VERSION:-v3.18.0}
+    container_name: wikipulse-mlflow
+    profiles: ["tools"]
+    command:
+      - mlflow
+      - server
+      - --backend-store-uri=sqlite:////opt/wikipulse/data/mlflow/mlflow.db
+      - --host=0.0.0.0
+      - --port=5000
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - lake-data:/opt/wikipulse/data
+    depends_on:
+      lake-init:
+        condition: service_completed_successfully
 
   lake-init:
     # One-shot, as root: make the shared lake volume belong to the dev/Airflow user
@@ -313,3 +369,4 @@ volumes:
   producer-state:
   prometheus-data:
   lake-data:
+  liftwing-state:

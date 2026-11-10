@@ -439,3 +439,78 @@ Newest at the bottom. Format: `D-<number> (<date>, Phase <n>)`.
   "the world is talking about this page".
 - **Caveat:** the threshold was chosen on the same data it was evaluated on
   (docs/LEAD_TIME.md says so). Re-check on a different day before trusting the precision figure.
+
+## D-033 (2026-11-10, Phase 6) - Lift Wing comparison via its EventStreams stream
+
+- **Options:** (a) call the Lift Wing API (`revertrisk-language-agnostic:predict`) for each
+  test edit (200 requests/min limit, so about 4 hours for 50,000 edits, and re-done every
+  week); (b) consume `mediawiki.page_revert_risk_prediction_change.v1`, where Wikimedia
+  publishes that model's prediction for each new revision.
+- **Choice:** (b), `python -m wikipulse.ml.liftwing_stream` -> `liftwing_scores`, also
+  replayable with `--since`. No rate limits, full coverage, and the exact model version
+  (`revertrisk-language-agnostic`, v3 on 2026-11-10) is stored with each score.
+- The comparison is made on the same test edits, with Lift Wing's threshold chosen the same
+  way as ours (max F1 on the same validation edits), so neither side is tuned on the test set.
+
+## D-034 (2026-11-10, Phase 6) - Label: "reverted within W hours" by exact content hash
+
+- Spec: "damaging if it is reverted within a set time window". An edit is reverted when a
+  later edit restores the page's SHA-1 content hash to its state *before* the edit, the same
+  identity test MediaWiki uses for its `mw-reverted` tag. This needed the parent revision's
+  hash, so the producer now carries `parent_rev_sha1` (`page_change.prior_state`, event
+  schema v2, backward compatible).
+- Rollbacks of consecutive edits label each of them, up to 15 per revert (MediaWiki's default
+  depth). Null edits (hash unchanged) never count as reverts.
+- **W** is chosen from the measured revert-delay distribution (METRICS.md): it must cover
+  most reverts while still leaving recent edits usable. Edits younger than W at the data's
+  end are excluded, so "not reverted *yet*" is never labelled "not reverted".
+- **Limitations, stated plainly:** partial reverts or manual rewrites aren't detected
+  (missed positives); good-faith edits reverted in content disputes *are* positives (the
+  label is "reverted", not "malicious", the same definition Lift Wing's revert-risk uses);
+  self-reverts count.
+
+## D-035 (2026-11-10, Phase 6) - Features: no diff text, same code for training and serving
+
+- 31 features from the edit itself (anonymous, bot, minor, page creation, is-a-revert, byte
+  change and relative change), the editor (edit count, account age, edits in the last
+  1 h / 24 h, edits already reverted in the last 24 h), the comment (empty, length, caps
+  ratio, profanity, "!", MediaWiki's auto-summaries such as "Blanked the page"), time (hour of
+  day, weekend) and the page (edits and reverts in the last 1 h / 24 h, time since the
+  previous edit, same editor as the previous edit).
+- **Point in time:** windows look strictly backwards, and "already reverted" counts only
+  reverts that happened before the edit. Unit-tested: appending future edits leaves every
+  feature unchanged.
+- **Not used:** diff text and page protection level, which need one Action API call per
+  edit (~5,000/hour for enwiki articles, far beyond polite use of a 200/min shared limit).
+  The spec lists them; this is a deliberate deviation. The What Changed feature (Phase 8)
+  fetches diffs on demand instead.
+- Training (`ml.train`) and live scoring (`ml.score`) call the same `build_features`, so
+  the served features can't drift from the trained ones.
+
+## D-036 (2026-11-10, Phase 6) - Time-based evaluation, two models, MLflow on SQLite
+
+- Edits sorted by time: oldest 70 % train, next 10 % validation (threshold = max F1;
+  LightGBM early stopping on average precision), newest 20 % test. No shuffling, so the
+  test is "the future", as the spec asks.
+- Models: logistic regression (standardised features, class-balanced) as the baseline;
+  LightGBM (63 leaves, learning rate 0.03, early stopping) as the main model.
+- Reported on test: precision, recall, F1 at the validation-chosen threshold, PR-AUC
+  (average precision), ROC-AUC, base rate. PR-AUC is the headline because reverted edits
+  are rare.
+- MLflow with `mlflow-skinny` (tracking client only) and a SQLite backend
+  (`data/mlflow/mlflow.db`, artifacts next to it). MLflow's file store is in maintenance
+  mode. The UI runs from the official image (`docker compose --profile tools up mlflow`).
+- Each run writes `data/models/<version>/{model.txt, meta.json}` and updates
+  `current.json` and `model_runs` (`is_current`); the scorer reloads within 5 minutes.
+- Training reads Postgres (7-day window), not the lake snapshot, because labels need
+  content hashes (`rev_sha1`, `parent_rev_sha1`) that silver doesn't carry. The weekly
+  snapshot stays as the record of what the lake looked like at training time.
+
+## D-037 (2026-11-10, Phase 6) - Live scoring and responsible use
+
+- `python -m wikipulse.ml.score` (container `scorer`) scores new edits every 15 s and writes
+  `risk_score` and `model_version` on `edits`. `risk_score >= threshold` (from the model's
+  metadata) is the high-risk feed (served by the API in Phase 10).
+- The score is "estimated probability this edit gets reverted". The UI must label it as an
+  automated estimate and never call a person a vandal (spec Part J); usernames are never
+  model features (only counts about the account).

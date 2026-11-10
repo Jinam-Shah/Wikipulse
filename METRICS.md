@@ -167,13 +167,64 @@ Env `cloud-dev`. Input: 26 h of **real enwiki article edits** replayed from Even
 | Pageview publication delay | hourly dump for 16:00-17:00 UTC published 18:51 UTC (about 2 h after the hour) | `dumps.wikimedia.org/other/pageviews/2026/2026-11/` listing |
 | EventStreams history available | >= 10 days (`since=` 2026-10-30 returned events from then) | `curl ...?since=` |
 
-## Vandalism model (Phase 6)
+## Phase 6 - Vandalism Risk Score
 
-| Model | Precision | Recall | F1 | PR-AUC | Test window | Date |
-|---|---|---|---|---|---|---|
-| Logistic regression | not measured | | | | | |
-| LightGBM | not measured | | | | | |
-| Lift Wing revert-risk (same edits) | not measured | | | | | |
+Env `cloud-dev`. Data: **553,671 real enwiki article edits**, 2026-11-06 00:00 to
+2026-11-10 02:35 UTC, replayed from EventStreams (`python -m wikipulse.producer --since 2026-11-06T00:00:00Z`
++ processor), and **538,665 Lift Wing scores** for the same period from
+`mediawiki.page_revert_risk_prediction_change.v1` (`python -m wikipulse.ml.liftwing_stream --since 2026-11-06T00:00:00Z`;
+model `revertrisk-language-agnostic` v3).
+
+Command: `python -m wikipulse.ml.train --start 2026-11-06T00:00Z --end 2026-11-10T00:00Z --label-window-hours 6`
+(5 min 53 s wall), MLflow run `lgbm-202611100241`.
+
+**Time-based split:** train 2026-11-06 00:00 -> 11-08 14:46, validation -> 11-08 23:21,
+**test 2026-11-08 23:21 -> 11-09 20:35** (103,756 edits, 3,803 reverted = 3.67 %).
+
+### Results on the newest data (test set)
+
+| Model | Precision | Recall | F1 | PR-AUC | ROC-AUC |
+|---|---|---|---|---|---|
+| Logistic regression (baseline) | 0.315 | 0.655 | 0.425 | 0.366 | 0.923 |
+| **LightGBM** | **0.362** | 0.644 | **0.464** | **0.496** | **0.932** |
+
+### Same edits as Lift Wing (96.3 % of test edits had a Lift Wing score: 99,902 edits, 3,783 reverted)
+
+| Model | Precision | Recall | F1 | PR-AUC | ROC-AUC |
+|---|---|---|---|---|---|
+| Lift Wing `revertrisk-language-agnostic` v3 | 0.253 | 0.644 | 0.363 | 0.286 | 0.902 |
+| WikiPulse logistic regression | 0.315 | 0.658 | 0.426 | 0.367 | 0.921 |
+| **WikiPulse LightGBM** | **0.363** | 0.646 | **0.465** | **0.498** | **0.932** |
+
+Thresholds were chosen on the validation edits (max F1) for every model, Lift Wing included:
+LightGBM 0.136, logistic regression 0.879, Lift Wing 0.797.
+
+**Read with care:** the ground truth is WikiPulse's own label (exact content-hash revert
+within 6 h, D-034), which WikiPulse's models were trained on and Lift Wing wasn't. Lift Wing is
+also one model for all Wikipedias, while this one is trained only on recent English
+Wikipedia articles. So this says WikiPulse predicts *this* label better on *this* data, not
+that it's a better vandalism model in general.
+
+### Checks behind the numbers
+
+| Check | Result | Command |
+|---|---|---|
+| Revert delay (3-day lookahead, 20,744 reverted edits) | median 15.8 min; 64.0 % within 1 h; **81.0 % within 6 h**; p90 13.1 h | `time_to_revert` in the training report |
+| Leakage ablation: LightGBM without `user_reverted_24h`, `page_reverts_24h`, `is_revert_edit` | test PR-AUC 0.498 -> **0.414** (still above Lift Wing's 0.286) | ablation script (same split) |
+| Top features by gain | user edit count 48.0 %, account age 19.0 %, user's edits reverted in last 24 h 6.2 %, user edits in last 24 h 4.4 %, page reverts in last 24 h 3.1 % | MLflow artifact `feature_importance_gain.json` |
+| Early small run (8 h of data, 2 h label window) | LightGBM PR-AUC 0.21, Lift Wing 0.12, on 8,028 edits | first preliminary run, not used |
+
+The 6 h window means 19 % of eventual reverts (those after 6 h) are labelled "not reverted";
+a longer window trades that against fewer usable recent edits (D-034).
+
+### Live scoring and orchestration
+
+| Metric | Value | Command |
+|---|---|---|
+| Scoring backlog (last 6 h, 35,207 edits) | 35,546 scored in 234 s (about 150 edits/s; live enwiki is about 2/s) | `python -m wikipulse.ml.score --once` |
+| High-risk share | 1,789 of 35,546 (5.0 %) above the 0.136 threshold; mean score 0.029 | `select ... from edits` |
+| Scorer container reading a model trained in the dev container | 5,686 edits scored | `docker compose --profile pipeline run --rm scorer python -m wikipulse.ml.score --once` |
+| Weekly DAG on a fresh lake | success: snapshot skipped (no lake yet), training ran in Airflow (model `lgbm-202611100323`), 6 min 13 s | `airflow dags test wikipulse_weekly_retrain` |
 
 ## Tests
 
@@ -191,4 +242,6 @@ Env `cloud-dev`. Input: 26 h of **real enwiki article edits** replayed from Even
 | pytest integration (Phase 4) | 20 passed | 2026-11-09 | `pytest -m integration` (cloud-dev) |
 | pytest unit (Phase 5) | 118 passed | 2026-11-09 | `pytest` (cloud-dev) |
 | pytest integration (Phase 5) | 23 passed | 2026-11-09 | `pytest -m integration` (cloud-dev) |
+| pytest unit (Phase 6) | 128 passed | 2026-11-10 | `docker compose run --rm dev pytest` (cloud-dev) |
+| pytest integration (Phase 6) | 24 passed | 2026-11-10 | `docker compose run --rm dev pytest -m integration` (cloud-dev) |
 | Playwright | not measured | | |
